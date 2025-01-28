@@ -16,6 +16,8 @@ var (
 	ErrInvalidURL = errors.New("invalid URL")
 	// ErrInvalidHostIP indicates an empty or invalid host.
 	ErrInvalidHostIP = errors.New("invalid host/IP")
+	// ErrInvalidClientPort indicates an empty or invalid host.
+	ErrInvalidClientPort = errors.New("invalid client port number")
 	// ErrInvalidFile indicates an empty or invalid file.
 	ErrInvalidFile = errors.New("invalid file")
 	// ErrSizeNotReceived indicates tsize was not negotiated.
@@ -42,7 +44,7 @@ var (
 )
 
 type errUnexpectedDatagram struct {
-	dg string //datagram string
+	dg string // datagram string
 }
 
 func (e *errUnexpectedDatagram) Error() string {

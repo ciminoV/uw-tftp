@@ -16,7 +16,8 @@ import (
 // Client makes requests to a server.
 type Client struct {
 	log  *logger
-	net  string            // UDP network (ie, "udp", "udp4", "udp6")
+	net  string // UDP network (ie, "udp", "udp4", "udp6")
+	port int
 	mode TransferMode      // TFTP transfer mode
 	opts map[string]string // Map of TFTP options (RFC2347)
 
@@ -36,6 +37,7 @@ func NewClient(opts ...ClientOpt) (*Client, error) {
 	c := &Client{
 		log:        newLogger("client"),
 		net:        defaultUDPNet,
+		port:       -1,
 		opts:       options,
 		mode:       defaultMode,
 		retransmit: defaultRetransmit,
@@ -61,7 +63,7 @@ func (c *Client) Get(url string) (*Response, error) {
 	}
 
 	// Create connection
-	conn, err := newConnFromHost(c.net, c.mode, u.host)
+	conn, err := newConnFromHost(c.net, c.mode, u.host, c.port)
 	if err != nil {
 		return nil, err
 	}
@@ -87,7 +89,7 @@ func (c *Client) Put(url string, r io.Reader, size int64) (err error) {
 	}
 
 	// Create connection
-	conn, err := newConnFromHost(c.net, c.mode, u.host)
+	conn, err := newConnFromHost(c.net, c.mode, u.host, c.port)
 	if err != nil {
 		return err
 	}
@@ -281,6 +283,16 @@ func ClientRetransmit(i int) ClientOpt {
 			return ErrInvalidRetransmit
 		}
 		c.retransmit = i
+		return nil
+	}
+}
+
+func ClientPort(port int) ClientOpt {
+	return func(c *Client) error {
+		if port < 1024 {
+			return ErrInvalidClientPort
+		}
+		c.port = port
 		return nil
 	}
 }

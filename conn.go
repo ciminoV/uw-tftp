@@ -74,11 +74,32 @@ func newSinglePortConn(addr *net.UDPAddr, mode TransferMode, netConn *net.UDPCon
 // newConnFromHost wraps newConn and looks up the target's address from a string
 //
 // This function is used by Client
-func newConnFromHost(udpNet string, mode TransferMode, host string) (*conn, error) {
+func newConnFromHost(udpNet string, mode TransferMode, host string, port int) (*conn, error) {
 	// Resolve server
 	addr, err := net.ResolveUDPAddr(udpNet, host)
 	if err != nil {
 		return nil, wrapError(err, "address resolve failed")
+	}
+
+	if port > 1023 {
+		netConn, err := net.ListenUDP(udpNet, &net.UDPAddr{Port: port})
+		if err != nil {
+			return nil, wrapError(err, "network listen failed")
+		}
+
+		c := &conn{
+			log:        newLogger(addr.String()),
+			remoteAddr: addr,
+			netConn:    netConn,
+			blksize:    defaultBlksize,
+			timeout:    defaultTimeout,
+			windowsize: defaultWindowsize,
+			retransmit: defaultRetransmit,
+			mode:       mode,
+		}
+		c.rx.buf = make([]byte, 4+defaultBlksize) // +4 for headers
+
+		return c, nil
 	}
 
 	return newConn(udpNet, mode, addr)
