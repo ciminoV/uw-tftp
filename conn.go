@@ -206,7 +206,7 @@ func (c *conn) receiveResponse() stateType {
 	addr, err := c.readFromNet()
 	if err != nil {
 		c.log.debug("error getting %s response from %v", c.tx.opcode(), c.remoteAddr)
-		c.err = err
+		// c.err = err
 		return c.receiveResponse
 	}
 
@@ -755,7 +755,7 @@ func (c *conn) getAck() stateType {
 	sAddr, err := c.readFromNet()
 	if err != nil {
 		c.log.trace("Error waiting for ACK: %v", err)
-		c.err = wrapError(err, "waiting for ACK")
+		// c.err = wrapError(err, "waiting for ACK")
 		return c.getAck
 	}
 
