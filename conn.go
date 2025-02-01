@@ -740,7 +740,9 @@ func (c *conn) sendAck(block uint16) error {
 
 // getAck reads ACK, validates structure and checks for ERROR
 //
-// If the received ACK is for a previous block, indicating the receiver missed data,
+// If the ACK is not received (timeout) it will rollback the transfer and
+// retransmit the whole window.
+// If the received ACK is for a previous block, indicating the receiver missed data.
 // it will rollback the transfer to the ACK'd block and reset the window.
 func (c *conn) getAck() stateType {
 	c.tries++
@@ -754,9 +756,17 @@ func (c *conn) getAck() stateType {
 	c.log.trace("Waiting for ACK from %s\n", c.remoteAddr)
 	sAddr, err := c.readFromNet()
 	if err != nil {
-		c.log.trace("Error waiting for ACK: %v", err)
+		c.log.debug("Error waiting for ACK: %v", err)
 		// c.err = wrapError(err, "waiting for ACK")
-		return c.getAck
+
+		c.txBuf.UnreadSlots(int(c.windowsize))
+		c.block -= c.windowsize
+		c.done = false
+
+		c.log.trace("Resending block %d\n", c.block+1)
+
+		return c.writeData
+		// return c.getAck
 	}
 
 	// Send error to requests not from requesting client. May consider
