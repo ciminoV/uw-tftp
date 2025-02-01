@@ -19,10 +19,10 @@ const (
 	defaultPort       = "69"
 	defaultMode       = ModeOctet
 	defaultUDPNet     = "udp"
-	defaultTimeout    = time.Second
+	defaultTimeout    = time.Second * 60
 	defaultBlksize    = 512
 	defaultWindowsize = 1
-	defaultRetransmit = 10
+	defaultRetransmit = 5
 )
 
 // All connections will use these options unless overridden.
