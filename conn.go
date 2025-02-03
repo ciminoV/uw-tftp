@@ -19,7 +19,7 @@ const (
 	defaultPort       = "69"
 	defaultMode       = ModeOctet
 	defaultUDPNet     = "udp"
-	defaultTimeout    = time.Second * 60
+	defaultTimeout    = time.Second * 20
 	defaultBlksize    = 512
 	defaultWindowsize = 1
 	defaultRetransmit = 5
@@ -208,8 +208,9 @@ func (c *conn) receiveResponse() stateType {
 	addr, err := c.readFromNet()
 	if err != nil {
 		c.log.debug("error getting %s response from %v", c.tx.opcode(), c.remoteAddr)
-		// c.err = err
-		return c.receiveResponse
+		c.log.debug("resending %s", c.tx.opcode())
+
+		return c.sendRequest()
 	}
 
 	if err := c.rx.validate(); err != nil {
