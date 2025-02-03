@@ -183,6 +183,7 @@ func (c *conn) sendReadRequest(filename string, opts map[string]string) error {
 	return c.err
 }
 
+// sendRequest() send WRQ/RRQ to the server and start waiting for the response
 func (c *conn) sendRequest() stateType {
 	// Set that we're a client
 	c.isClient = true
@@ -196,6 +197,7 @@ func (c *conn) sendRequest() stateType {
 	return c.receiveResponse
 }
 
+// receiveResponse() receive the response to a WRQ/RRQ request from the server
 func (c *conn) receiveResponse() stateType {
 	if c.tries >= c.retransmit {
 		c.err = wrapError(c.err, "receiving request response")
@@ -521,14 +523,28 @@ func (c *conn) readData() stateType {
 	c.tries++
 
 	c.log.trace("Waiting for DATA from %s\n", c.remoteAddr)
+
+	oack := datagram{}
+	if c.block == 0 {
+		oack = c.tx
+	}
+
 	_, err := c.readFromNet()
 	if err != nil {
 		c.log.debug("error receiving block %d: %v", c.block+1, err)
-		c.log.trace("Resending ACK for %d\n", c.block)
-		if err := c.sendAck(c.block); err != nil {
-			c.log.debug("resending ACK %v", err)
+
+		if c.block == 0 {
+			c.log.trace("Resending %s", c.tx)
+			c.tx = oack
+			c.writeToNet()
+		} else {
+			c.log.trace("Resending ACK for %d\n", c.block)
+			if err := c.sendAck(c.block); err != nil {
+				c.log.debug("resending ACK %v", err)
+			}
+			c.window = 0
 		}
-		c.window = 0
+
 		return c.readData
 	}
 
