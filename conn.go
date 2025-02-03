@@ -774,16 +774,19 @@ func (c *conn) getAck() stateType {
 	sAddr, err := c.readFromNet()
 	if err != nil {
 		c.log.debug("Error waiting for ACK: %v", err)
-		// c.err = wrapError(err, "waiting for ACK")
 
-		c.txBuf.UnreadSlots(int(c.windowsize))
-		c.block -= c.windowsize
+		if c.window > 0 {
+			c.txBuf.UnreadSlots(int(c.window))
+			c.block -= c.window
+		} else {
+			c.txBuf.UnreadSlots(int(c.windowsize))
+			c.block -= c.windowsize
+		}
 		c.done = false
 
 		c.log.trace("Resending block %d\n", c.block+1)
 
 		return c.writeData
-		// return c.getAck
 	}
 
 	// Send error to requests not from requesting client. May consider
