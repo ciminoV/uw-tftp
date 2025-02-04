@@ -201,7 +201,7 @@ func (c *conn) sendRequest() stateType {
 // receiveResponse() receive the response to a WRQ/RRQ request from the server
 func (c *conn) receiveResponse() stateType {
 	if c.tries >= c.retransmit {
-		c.err = wrapError(c.err, "receiving request response")
+		c.err = wrapError(ErrMaxRetries, "receiving request response")
 		return nil
 	}
 	c.tries++
@@ -536,6 +536,7 @@ func (c *conn) readData() stateType {
 		c.log.debug("error receiving block %d: %v", c.block+1, err)
 
 		if c.block == 0 {
+			// retx oack
 			c.log.trace("Resending %s", c.tx)
 			c.tx = oack
 			c.writeToNet()
