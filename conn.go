@@ -137,6 +137,7 @@ type conn struct {
 	p             []byte // bytes to be read/written (depending on send/receive)
 	n             int    // byte count read/written
 	tries         int    // retry counter
+	triesAck      int    // retry ack counter
 	err           error  // error has occurreds
 	closing       bool   // connection is closing
 	done          bool   // the transfer is complete
@@ -581,30 +582,72 @@ func (c *conn) ackData() stateType {
 		c.log.trace("ackData diff: %d, current block: %d, rx block %d", diff, c.block, c.rx.block())
 		c.block++
 		c.window++
+		c.triesAck = 0
 		c.catchup = false
 	case diff == 0:
-		// Same block again, ignore
+		// Last block or already received window (or same block if window = 1)
+		if c.catchup || c.windowsize == 1 {
+			c.log.debug("Block %d already received. Resending ACK for %d", c.rx.block(), c.block)
+			if err := c.sendAck(c.block); err != nil {
+				c.err = wrapError(err, "sending missed ACK")
+				return nil
+			}
+			c.catchup = false
+			c.triesAck++
+		}
+
 		c.log.trace("ackData diff: %d, current block: %d, rx block %d", diff, c.block, c.rx.block())
+
 		return c.read
 	case diff > c.windowsize:
+		// Sender is behind, missed ACK
+		if c.catchup {
+			return c.read
+		}
 		c.log.trace("ackData diff: %d, current block: %d, rx block %d", diff, c.block, c.rx.block())
-		// Sender is behind, missed ACK? Wait for catchup
+		c.log.debug("Blocks from %d to %d already received.", c.rx.block(), c.block)
+
+		if c.triesAck >= c.retransmit {
+			c.log.debug("Max retries exceeded")
+			c.sendError(ErrCodeNotDefined, "max retries reached")
+			c.err = wrapError(ErrMaxRetries, "reading data")
+			return nil
+		}
+
+		c.window = 0
+		c.catchup = true
+
 		return c.read
 	case diff <= c.windowsize:
-		c.log.trace("ackData diff: %d, current block: %d, rx block %d", diff, c.block, c.rx.block())
 		// We missed blocks
 		if c.catchup {
+			// send ack only after reading is done
+			if diff == c.windowsize {
+				if err := c.sendAck(c.block); err != nil {
+					c.err = wrapError(err, "sending missed block(s) ACK")
+					return nil
+				}
+				c.triesAck++
+				c.catchup = false
+			}
 			// Ignore, we need to catchup with server
 			return c.read
 		}
-		// ACK previous block, reset window, and return sequnce error
+		c.log.trace("ackData diff: %d, current block: %d, rx block %d", diff, c.block, c.rx.block())
+
+		// ACK previous block, reset window, and return sequence error
 		c.log.debug("Missing blocks between %d and %d. Resetting to block %d", c.block, c.rx.block(), c.block)
-		if err := c.sendAck(c.block); err != nil {
-			c.err = wrapError(err, "sending missed block(s) ACK")
+
+		if c.triesAck >= c.retransmit {
+			c.log.debug("Max retries exceeded")
+			c.sendError(ErrCodeNotDefined, "max retries reached")
+			c.err = wrapError(ErrMaxRetries, "reading data")
 			return nil
 		}
+
 		c.window = 0
 		c.catchup = true
+
 		return c.read
 	}
 
@@ -776,13 +819,14 @@ func (c *conn) getAck() stateType {
 		c.log.debug("Error waiting for ACK: %v", err)
 
 		if c.window > 0 {
+			// last window retx
 			c.txBuf.UnreadSlots(int(c.window))
 			c.block -= c.window
+			c.done = false
 		} else {
 			c.txBuf.UnreadSlots(int(c.windowsize))
 			c.block -= c.windowsize
 		}
-		c.done = false
 
 		c.log.trace("Resending block %d\n", c.block+1)
 
