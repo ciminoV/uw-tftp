@@ -546,6 +546,7 @@ func (c *conn) readData() stateType {
 				c.log.debug("resending ACK %v", err)
 			}
 			c.window = 0
+			c.tries += c.triesAck
 		}
 
 		return c.readData
