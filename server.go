@@ -102,13 +102,28 @@ func (s *Server) Serve(conn *net.UDPConn) error {
 	s.connMu.RLock()
 	defer s.connMu.RUnlock()
 	buf := make([]byte, 65536) // Largest possible TFTP datagram
+	offset := 0
 	for {
 		select {
 		case <-s.close:
 			return nil
 		default:
 			conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
-			n, addr, err := conn.ReadFromUDP(buf)
+			n, addr, err := conn.ReadFromUDP(buf[offset:])
+
+			// Fragmented WRQ/RRQ
+			if n > 0 && (buf[1] == byte(opCodeRRQ) || buf[1] == byte(opCodeWRQ)) {
+				if buf[offset+n-1] != 0x0 {
+					offset += n
+					s.log.trace("Incomplete request from %v: %d bytes received", addr, offset)
+					continue
+				}
+
+				n += offset
+				offset = 0
+				s.log.trace("New request from %v: %d bytes received", addr, n)
+			}
+
 			if err != nil {
 				if err, ok := err.(*net.OpError); ok && err.Timeout() {
 					continue
@@ -139,13 +154,13 @@ func (s *Server) connManager() {
 		select {
 		case req := <-s.dispatchChan:
 			switch req.pkt[1] {
-			case 1: //RRQ
+			case byte(opCodeRRQ): // RRQ
 				if s.singlePort {
 					reqChan = make(chan []byte, 64)
 					reqMap[req.addr.String()] = reqChan
 				}
 				go s.dispatchReadRequest(req, reqChan)
-			case 2: //WRQ
+			case byte(opCodeWRQ): // WRQ
 				if s.singlePort {
 					reqChan = make(chan []byte, 64)
 					reqMap[req.addr.String()] = reqChan
@@ -323,7 +338,7 @@ func ServerNet(net string) ServerOpt {
 
 // ServerRetransmit configures the per-packet retransmission limit for all requests.
 //
-// Default: 10.
+// Default: 5.
 func ServerRetransmit(i int) ServerOpt {
 	return func(s *Server) error {
 		if i < 0 {

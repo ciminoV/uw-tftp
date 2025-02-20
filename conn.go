@@ -20,7 +20,9 @@ const (
 	defaultMode       = ModeOctet
 	defaultUDPNet     = "udp"
 	defaultTimeout    = time.Second * 20
-	defaultBlksize    = 512
+	defaultBlksize    = 60
+	defaultHdrsize    = 4
+	defaultPktsize    = defaultHdrsize + defaultBlksize
 	defaultWindowsize = 1
 	defaultRetransmit = 5
 )
@@ -51,7 +53,7 @@ func newConn(udpNet string, mode TransferMode, addr *net.UDPAddr) (*conn, error)
 		retransmit: defaultRetransmit,
 		mode:       mode,
 	}
-	c.rx.buf = make([]byte, 4+defaultBlksize) // +4 for headers
+	c.rx.buf = make([]byte, defaultPktsize)
 
 	return c, nil
 }
@@ -65,7 +67,7 @@ func newSinglePortConn(addr *net.UDPAddr, mode TransferMode, netConn *net.UDPCon
 		windowsize: defaultWindowsize,
 		retransmit: defaultRetransmit,
 		mode:       mode,
-		buf:        make([]byte, 4+defaultBlksize), // +4 for headers
+		buf:        make([]byte, defaultPktsize),
 		reqChan:    reqChan,
 		netConn:    netConn,
 	}
@@ -97,7 +99,7 @@ func newConnFromHost(udpNet string, mode TransferMode, host string, port int) (*
 			retransmit: defaultRetransmit,
 			mode:       mode,
 		}
-		c.rx.buf = make([]byte, 4+defaultBlksize) // +4 for headers
+		c.rx.buf = make([]byte, defaultPktsize)
 
 		return c, nil
 	}
@@ -190,12 +192,18 @@ func (c *conn) sendRequest() stateType {
 	c.isClient = true
 
 	// Send request
-	if err := c.writeToNet(); err != nil {
+	if err := c.writeToNet(c.fragmentRequest()); err != nil {
 		c.err = wrapError(err, "writing request to network")
 		return nil
 	}
 
 	return c.receiveResponse
+}
+
+// fragmentRequest() return true if the tx buffer is larger than the default packet size.
+// Note that a wrq/rrq/oack is always sent using the defaultPktsize.
+func (c *conn) fragmentRequest() bool {
+	return (c.tx.offset > defaultPktsize)
 }
 
 // receiveResponse() receive the response to a WRQ/RRQ request from the server
@@ -350,7 +358,7 @@ func (c *conn) sendOACK(o options) stateType {
 	return func() stateType {
 		c.log.trace("Sending OACK to %s\n", c.remoteAddr)
 		c.tx.writeOptionAck(o)
-		if err := c.writeToNet(); err != nil {
+		if err := c.writeToNet(c.fragmentRequest()); err != nil {
 			return c.error(err, "writing OACK")
 		}
 
@@ -400,7 +408,7 @@ func (c *conn) writeData() stateType {
 
 	// Send w.tx datagram
 	c.log.trace("Sending block %d with %d bytes to %s\n", c.block, n, c.remoteAddr)
-	err = c.writeToNet()
+	err = c.writeToNet(false)
 	if err != nil {
 		c.err = wrapError(err, "writing data to network")
 		return nil
@@ -465,7 +473,7 @@ func (c *conn) readSetup() stateType {
 	}
 
 	// Set buf size
-	if needed := int(c.blksize + 4); len(c.rx.buf) != needed {
+	if needed := int(c.blksize + defaultHdrsize); len(c.rx.buf) != needed {
 		c.rx.buf = make([]byte, needed)
 	}
 
@@ -480,9 +488,8 @@ func (c *conn) readSetup() stateType {
 	}
 
 	// Send ACK/OACK
-	err = c.writeToNet()
-	if err != nil {
-		c.err = err
+	if err := c.writeToNet(c.fragmentRequest()); err != nil {
+		c.err = wrapError(err, "writing request to network")
 		return nil
 	}
 
@@ -536,10 +543,10 @@ func (c *conn) readData() stateType {
 		c.log.debug("error receiving block %d: %v", c.block+1, err)
 
 		if c.block == 0 {
-			// retx oack
+			// Retransmit an OACK
 			c.log.trace("Resending %s", c.tx)
 			c.tx = oack
-			c.writeToNet()
+			c.writeToNet(c.fragmentRequest())
 		} else {
 			c.log.trace("Resending ACK for %d\n", c.block)
 			if err := c.sendAck(c.block); err != nil {
@@ -787,7 +794,7 @@ func (c *conn) sendError(code ErrorCode, msg string) {
 
 	// Send error
 	c.tx.writeError(code, msg)
-	if err := c.writeToNet(); err != nil {
+	if err := c.writeToNet(false); err != nil {
 		c.log.debug("sending ERROR: %v", err)
 	}
 }
@@ -797,7 +804,7 @@ func (c *conn) sendAck(block uint16) error {
 	c.tx.writeAck(block)
 
 	c.log.trace("Sending ACK for %d to %s\n", block, c.remoteAddr)
-	return wrapError(c.writeToNet(), "sending ACK")
+	return wrapError(c.writeToNet(false), "sending ACK")
 }
 
 // getAck reads ACK, validates structure and checks for ERROR
@@ -903,7 +910,7 @@ func (c *conn) remoteError() error {
 	return c.err
 }
 
-// readFromNet reads from netConn into b.
+// readFromNet reads from netConn into buffer.
 func (c *conn) readFromNet() (net.Addr, error) {
 	if c.reqChan != nil {
 		// Setup timer
@@ -923,20 +930,51 @@ func (c *conn) readFromNet() (net.Addr, error) {
 		}
 	}
 
+	// TODO: read from modem tcp port?
 	if err := c.netConn.SetReadDeadline(time.Now().Add(c.timeout)); err != nil {
 		return nil, wrapError(err, "setting network read deadline")
 	}
+
 	n, addr, err := c.netConn.ReadFrom(c.rx.buf)
 	c.rx.offset = n
+
+	// Fragmented OACK received
+	for c.rx.buf[c.rx.offset-1] != 0x0 {
+		if c.rx.opcode() == opCodeOACK {
+			buf := make([]byte, n)
+			n, addr, err = c.netConn.ReadFrom(buf)
+			c.rx.buf = append(c.rx.buf, buf...)
+			c.rx.offset += n
+		}
+	}
+
+	c.log.debug("readfromnet %v", addr)
 	return addr, err
 }
 
 // writeToNet writes tx to netConn.
-func (c *conn) writeToNet() error {
+// If fragment is true, the tx buffer is sent in multiple packets of default size.
+// ( Fragmentation is required when defaultPktsize < WRQ/RRQ/OACK size)
+func (c *conn) writeToNet(fragment bool) error {
 	if err := c.netConn.SetWriteDeadline(time.Now().Add(c.timeout * time.Duration(c.retransmit))); err != nil {
 		return wrapError(err, "setting network write deadline")
 	}
+
+	// TODO: write to modem tcp port?
+	c.log.debug("writetonet %v", c.remoteAddr)
+
+	if fragment {
+		var err error
+
+		for i := 0; i < c.tx.offset; i += defaultPktsize {
+			_, err = c.netConn.WriteTo(c.tx.getBytes(i, i+defaultPktsize), c.remoteAddr)
+		}
+
+		return err
+	}
+
 	_, err := c.netConn.WriteTo(c.tx.bytes(), c.remoteAddr)
+
 	return err
 }
 
@@ -969,7 +1007,7 @@ func (r *ringBuffer) Len() int {
 	return r.Buffer.Len() + bufInUse
 }
 
-// Read reads data from from byte.Buffer if current and head are equal.
+// Read reads data from byte.Buffer if current and head are equal.
 // If current is behind head, data will be read from buf.
 func (r *ringBuffer) Read(p []byte) (int, error) {
 	slot := r.current % r.slots

@@ -131,6 +131,18 @@ func (d *datagram) bytes() []byte {
 	return d.buf[:d.offset]
 }
 
+// Returns the allocated bytes within a range
+func (d *datagram) getBytes(beg int, end int) []byte {
+	if beg > end || d.offset < beg {
+		return d.buf[:d.offset]
+	}
+	if d.offset < end && d.offset > beg {
+		return d.buf[beg:d.offset]
+	}
+
+	return d.buf[beg:end]
+}
+
 // Resets the byte buffer.
 // If requested size is larger than allocated the buffer is reallocated.
 func (d *datagram) reset(size int) {

@@ -222,7 +222,7 @@ func ClientMode(mode TransferMode) ClientOpt {
 // ClientBlocksize configures the number of data bytes that will be send in each datagram.
 // Valid range is 8 to 65464.
 //
-// Default: 512.
+// Default: 60.
 func ClientBlocksize(size int) ClientOpt {
 	return func(c *Client) error {
 		if size < 8 || size > 65464 {
@@ -236,7 +236,7 @@ func ClientBlocksize(size int) ClientOpt {
 // ClientTimeout configures the number of seconds to wait before resending an unacknowledged datagram.
 // Valid range is 1 to 255.
 //
-// Default: 1.
+// Default: 20.
 func ClientTimeout(seconds int) ClientOpt {
 	return func(c *Client) error {
 		if seconds < 1 || seconds > 255 {
