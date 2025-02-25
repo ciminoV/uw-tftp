@@ -938,9 +938,9 @@ func (c *conn) readFromNet() (net.Addr, error) {
 	n, addr, err := c.netConn.ReadFrom(c.rx.buf)
 	c.rx.offset = n
 
-	// Fragmented OACK received
-	for c.rx.buf[c.rx.offset-1] != 0x0 {
-		if c.rx.opcode() == opCodeOACK {
+	if n > 0 && c.rx.opcode() == opCodeOACK {
+		// Fragmented OACK received (last byte is always empty)
+		for c.rx.buf[c.rx.offset-1] != 0x0 {
 			buf := make([]byte, n)
 			n, addr, err = c.netConn.ReadFrom(buf)
 			c.rx.buf = append(c.rx.buf, buf...)
