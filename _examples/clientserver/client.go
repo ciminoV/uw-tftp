@@ -9,9 +9,9 @@ import (
 )
 
 func main() {
-	ip := os.Args[1]       // Server ip
-	port := os.Args[2]     // Server port
-	filename := os.Args[3] // File to send
+	localhost := "127.0.0.1" // Server ip
+	port := os.Args[1]       // UDP Server port
+	filename := os.Args[2]   // File to send
 
 	// Get the file
 	file, err := os.Open(filename)
@@ -30,8 +30,9 @@ func main() {
 	opts := []tftp.ClientOpt{
 		tftp.ClientBlocksize(60),  // default 512
 		tftp.ClientWindowsize(10), // default 1
-		tftp.ClientTimeout(15),    // default 20
-		tftp.ClientRetransmit(3),  // default 5
+		// tftp.ClientTimeout(25),    // default 20
+		// tftp.ClientRetransmit(3),  // default 5
+		tftp.ClientTcpForward(":55555"), // default ""
 	}
 	client, _ := tftp.NewClient(opts...)
 

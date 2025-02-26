@@ -22,6 +22,9 @@ type Client struct {
 	opts map[string]string // Map of TFTP options (RFC2347)
 
 	retransmit int // Per-packet retransmission limit
+
+	tcpAddrStr string       // TCP address string
+	tcpConn    *net.TCPConn // TCP connection socket
 }
 
 // NewClient returns a configured Client.
@@ -50,6 +53,17 @@ func NewClient(opts ...ClientOpt) (*Client, error) {
 		}
 	}
 
+	if c.tcpAddrStr != "" {
+		tcpClient, err := net.ResolveTCPAddr(defaultTCPNet, c.tcpAddrStr)
+		if err != nil {
+			return nil, wrapError(err, "resolve TCP address failed")
+		}
+		c.tcpConn, err = net.DialTCP(defaultTCPNet, nil, tcpClient)
+		if err != nil {
+			return nil, wrapError(err, "connecting to TCP address failed")
+		}
+	}
+
 	return c, nil
 }
 
@@ -63,7 +77,12 @@ func (c *Client) Get(url string) (*Response, error) {
 	}
 
 	// Create connection
-	conn, err := newConnFromHost(c.net, c.mode, u.host, c.port)
+	var conn *conn
+	if c.tcpAddrStr == "" {
+		conn, err = newConnFromHost(c.net, c.mode, u.host, c.port, nil)
+	} else {
+		conn, err = newConnFromHost(c.net, c.mode, u.host, c.port, c.tcpConn)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -89,7 +108,12 @@ func (c *Client) Put(url string, r io.Reader, size int64) (err error) {
 	}
 
 	// Create connection
-	conn, err := newConnFromHost(c.net, c.mode, u.host, c.port)
+	var conn *conn
+	if c.tcpAddrStr == "" {
+		conn, err = newConnFromHost(c.net, c.mode, u.host, c.port, nil)
+	} else {
+		conn, err = newConnFromHost(c.net, c.mode, u.host, c.port, c.tcpConn)
+	}
 	if err != nil {
 		return err
 	}
@@ -293,6 +317,17 @@ func ClientPort(port int) ClientOpt {
 			return ErrInvalidClientPort
 		}
 		c.port = port
+		return nil
+	}
+}
+
+// ClientTcpForward forwards all incoming/outgoing packets to an external application
+// listening on a tcp socket on localhost.
+//
+// Default is disabled (empty string)
+func ClientTcpForward(tcpAddr string) ClientOpt {
+	return func(c *Client) error {
+		c.tcpAddrStr = tcpAddr
 		return nil
 	}
 }

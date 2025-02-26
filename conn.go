@@ -19,6 +19,7 @@ const (
 	defaultPort       = "69"
 	defaultMode       = ModeOctet
 	defaultUDPNet     = "udp"
+	defaultTCPNet     = "tcp"
 	defaultTimeout    = time.Second * 20
 	defaultBlksize    = 60
 	defaultHdrsize    = 4
@@ -36,7 +37,8 @@ var defaultOptions = map[string]string{
 //
 // udpNet is one of "udp", "udp4", or "udp6"
 // addr is the address of the target client or server
-func newConn(udpNet string, mode TransferMode, addr *net.UDPAddr) (*conn, error) {
+// tcpConn is the TCP socket of an external application, if specified
+func newConn(udpNet string, mode TransferMode, addr *net.UDPAddr, tcpConn *net.TCPConn) (*conn, error) {
 	// Start listening, an empty UDPAddr will cause the system to assign a port
 	netConn, err := net.ListenUDP(udpNet, &net.UDPAddr{})
 	if err != nil {
@@ -55,11 +57,15 @@ func newConn(udpNet string, mode TransferMode, addr *net.UDPAddr) (*conn, error)
 	}
 	c.rx.buf = make([]byte, defaultPktsize)
 
+	if tcpConn != nil {
+		c.tcpConn = tcpConn
+	}
+
 	return c, nil
 }
 
-func newSinglePortConn(addr *net.UDPAddr, mode TransferMode, netConn *net.UDPConn, reqChan chan []byte) *conn {
-	return &conn{
+func newSinglePortConn(addr *net.UDPAddr, mode TransferMode, netConn *net.UDPConn, tcpConn *net.TCPConn, reqChan chan []byte) *conn {
+	c := &conn{
 		log:        newLogger(addr.String()),
 		remoteAddr: addr,
 		blksize:    defaultBlksize,
@@ -70,19 +76,27 @@ func newSinglePortConn(addr *net.UDPAddr, mode TransferMode, netConn *net.UDPCon
 		buf:        make([]byte, defaultPktsize),
 		reqChan:    reqChan,
 		netConn:    netConn,
+		tcpConn:    tcpConn,
 	}
+
+	if tcpConn != nil {
+		c.tcpConn = tcpConn
+	}
+
+	return c
 }
 
 // newConnFromHost wraps newConn and looks up the target's address from a string
 //
 // This function is used by Client
-func newConnFromHost(udpNet string, mode TransferMode, host string, port int) (*conn, error) {
+func newConnFromHost(udpNet string, mode TransferMode, host string, port int, tcpConn *net.TCPConn) (*conn, error) {
 	// Resolve server
 	addr, err := net.ResolveUDPAddr(udpNet, host)
 	if err != nil {
 		return nil, wrapError(err, "address resolve failed")
 	}
 
+	// Use a specific udp port
 	if port > 1023 {
 		netConn, err := net.ListenUDP(udpNet, &net.UDPAddr{Port: port})
 		if err != nil {
@@ -101,16 +115,21 @@ func newConnFromHost(udpNet string, mode TransferMode, host string, port int) (*
 		}
 		c.rx.buf = make([]byte, defaultPktsize)
 
+		if tcpConn != nil {
+			c.tcpConn = tcpConn
+		}
+
 		return c, nil
 	}
 
-	return newConn(udpNet, mode, addr)
+	return newConn(udpNet, mode, addr, tcpConn)
 }
 
 // conn handles TFTP read and write requests
 type conn struct {
 	log        *logger
-	netConn    *net.UDPConn // Underlying network connection
+	netConn    *net.UDPConn // Underlying UDP network connection
+	tcpConn    *net.TCPConn // Underlying TCP network connection
 	remoteAddr net.Addr     // Address of the remote server or client
 
 	// Single Port Mode
@@ -697,6 +716,10 @@ func (c *conn) Close() error {
 		defer func() {
 			// Close network even if another error occurs
 			err := c.netConn.Close()
+			// Also close the tcp socket, if any
+			if c.tcpConn != nil {
+				err = c.tcpConn.Close()
+			}
 			if err != nil {
 				c.log.debug("error closing network connection:", err)
 			}
@@ -930,25 +953,41 @@ func (c *conn) readFromNet() (net.Addr, error) {
 		}
 	}
 
-	// TODO: read from modem tcp port?
-	if err := c.netConn.SetReadDeadline(time.Now().Add(c.timeout)); err != nil {
-		return nil, wrapError(err, "setting network read deadline")
+	var err error
+	var n int
+	var addr net.Addr
+
+	if c.tcpConn == nil {
+		// Read from the UDP server socket
+		if err = c.netConn.SetReadDeadline(time.Now().Add(c.timeout)); err != nil {
+			return nil, wrapError(err, "setting network read deadline")
+		}
+		n, addr, err = c.netConn.ReadFrom(c.rx.buf)
+	} else {
+		// Read from the TCP external socket
+		if err = c.tcpConn.SetReadDeadline(time.Now().Add(c.timeout)); err != nil {
+			return nil, wrapError(err, "setting network read deadline")
+		}
+		n, err = c.tcpConn.Read(c.rx.buf)
+		addr = c.tcpConn.RemoteAddr()
 	}
 
-	n, addr, err := c.netConn.ReadFrom(c.rx.buf)
 	c.rx.offset = n
-
 	if n > 0 && c.rx.opcode() == opCodeOACK {
 		// Fragmented OACK received (last byte is always empty)
 		for c.rx.buf[c.rx.offset-1] != 0x0 {
 			buf := make([]byte, n)
-			n, addr, err = c.netConn.ReadFrom(buf)
+			if c.tcpConn == nil {
+				n, addr, err = c.netConn.ReadFrom(buf)
+			} else {
+				n, err = c.tcpConn.Read(buf)
+				addr = c.tcpConn.RemoteAddr()
+			}
 			c.rx.buf = append(c.rx.buf, buf...)
 			c.rx.offset += n
 		}
 	}
 
-	c.log.debug("readfromnet %v", addr)
 	return addr, err
 }
 
@@ -956,24 +995,31 @@ func (c *conn) readFromNet() (net.Addr, error) {
 // If fragment is true, the tx buffer is sent in multiple packets of default size.
 // ( Fragmentation is required when defaultPktsize < WRQ/RRQ/OACK size)
 func (c *conn) writeToNet(fragment bool) error {
-	if err := c.netConn.SetWriteDeadline(time.Now().Add(c.timeout * time.Duration(c.retransmit))); err != nil {
-		return wrapError(err, "setting network write deadline")
-	}
+	var err error
 
-	// TODO: write to modem tcp port?
-	c.log.debug("writetonet %v", c.remoteAddr)
+	if c.tcpConn == nil {
+		// Read from the UDP server socket
+		if err = c.netConn.SetWriteDeadline(time.Now().Add(c.timeout * time.Duration(c.retransmit))); err != nil {
+			return wrapError(err, "setting network write deadline")
+		}
+		_, err = c.netConn.WriteTo(c.tx.bytes(), c.remoteAddr)
+	} else {
+		// Read from the TCP external socket
+		if err = c.tcpConn.SetWriteDeadline(time.Now().Add(c.timeout * time.Duration(c.retransmit))); err != nil {
+			return wrapError(err, "setting network write deadline")
+		}
+		_, err = c.tcpConn.Write(c.tx.bytes())
+	}
 
 	if fragment {
-		var err error
-
 		for i := 0; i < c.tx.offset; i += defaultPktsize {
-			_, err = c.netConn.WriteTo(c.tx.getBytes(i, i+defaultPktsize), c.remoteAddr)
+			if c.tcpConn == nil {
+				_, err = c.netConn.WriteTo(c.tx.getBytes(i, i+defaultPktsize), c.remoteAddr)
+			} else {
+				_, err = c.tcpConn.Write(c.tx.getBytes(i, i+defaultPktsize))
+			}
 		}
-
-		return err
 	}
-
-	_, err := c.netConn.WriteTo(c.tx.bytes(), c.remoteAddr)
 
 	return err
 }

@@ -16,13 +16,15 @@ import (
 // of the handlers isn't registered, the server will return errors to clients
 // attempting to use them.
 type Server struct {
-	log     *logger
-	net     string
-	addrStr string
-	addr    *net.UDPAddr
-	connMu  sync.RWMutex
-	conn    *net.UDPConn
-	close   chan struct{}
+	log        *logger
+	net        string       // UDP network
+	addrStr    string       // UDP address string
+	tcpAddrStr string       // TCP address string
+	addr       *net.UDPAddr // UDP server address
+	connMu     sync.RWMutex
+	conn       *net.UDPConn
+	tcpConn    *net.TCPConn // TCP connection socket
+	close      chan struct{}
 
 	singlePort bool
 
@@ -60,6 +62,17 @@ func NewServer(addr string, opts ...ServerOpt) (*Server, error) {
 	for _, opt := range opts {
 		if err := opt(s); err != nil {
 			return nil, err
+		}
+	}
+
+	if s.tcpAddrStr != "" {
+		tcpServer, err := net.ResolveTCPAddr(defaultTCPNet, s.tcpAddrStr)
+		if err != nil {
+			return nil, wrapError(err, "resolve TCP address failed")
+		}
+		s.tcpConn, err = net.DialTCP(defaultTCPNet, nil, tcpServer)
+		if err != nil {
+			return nil, wrapError(err, "connecting to TCP address failed")
 		}
 	}
 
@@ -108,8 +121,27 @@ func (s *Server) Serve(conn *net.UDPConn) error {
 		case <-s.close:
 			return nil
 		default:
-			conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
-			n, addr, err := conn.ReadFromUDP(buf[offset:])
+			var err error
+			var n int
+			var addr *net.UDPAddr
+
+			if s.tcpAddrStr == "" {
+				// Read from UDP server
+				conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+				n, addr, err = conn.ReadFromUDP(buf[offset:])
+
+			} else {
+				// Read from TCP socket
+				s.tcpConn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+				n, err = s.tcpConn.Read(buf[offset:])
+
+				// Only needed for debug purposes
+				tcpAddr := s.tcpConn.RemoteAddr().(*net.TCPAddr)
+				addr = &net.UDPAddr{
+					IP:   tcpAddr.IP,
+					Port: tcpAddr.Port,
+				}
+			}
 
 			// Fragmented WRQ/RRQ
 			if n > 0 && (buf[1] == byte(opCodeRRQ) || buf[1] == byte(opCodeWRQ)) {
@@ -279,9 +311,18 @@ func (s *Server) newConn(req *request, reqChan chan []byte) (*conn, func() error
 	}
 
 	if s.singlePort {
-		c = newSinglePortConn(req.addr, dg.mode(), s.conn, reqChan)
+		if s.tcpAddrStr != "" {
+			c = newSinglePortConn(req.addr, dg.mode(), s.conn, s.tcpConn, reqChan)
+		} else {
+			c = newSinglePortConn(req.addr, dg.mode(), s.conn, nil, reqChan)
+		}
 	} else {
-		c, err = newConn(s.net, dg.mode(), req.addr) // Use empty mode until request has been parsed.
+		// Use empty mode until request has been parsed.
+		if s.tcpAddrStr != "" {
+			c, err = newConn(s.net, dg.mode(), req.addr, s.tcpConn)
+		} else {
+			c, err = newConn(s.net, dg.mode(), req.addr, nil)
+		}
 		if err != nil {
 			s.log.err("Received error opening connection for new request: %v", err)
 			return nil, nil, err
@@ -358,6 +399,17 @@ func ServerRetransmit(i int) ServerOpt {
 func ServerSinglePort(enable bool) ServerOpt {
 	return func(s *Server) error {
 		s.singlePort = enable
+		return nil
+	}
+}
+
+// ServerTcpForward forwards all incoming/outgoing packets to an external application
+// listening on a tcp socket on localhost.
+//
+// Default is disabled (empty string)
+func ServerTcpForward(tcpAddr string) ServerOpt {
+	return func(s *Server) error {
+		s.tcpAddrStr = tcpAddr
 		return nil
 	}
 }
