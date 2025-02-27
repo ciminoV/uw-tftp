@@ -65,17 +65,6 @@ func NewServer(addr string, opts ...ServerOpt) (*Server, error) {
 		}
 	}
 
-	if s.tcpAddrStr != "" {
-		tcpServer, err := net.ResolveTCPAddr(defaultTCPNet, s.tcpAddrStr)
-		if err != nil {
-			return nil, wrapError(err, "resolve TCP address failed")
-		}
-		s.tcpConn, err = net.DialTCP(defaultTCPNet, nil, tcpServer)
-		if err != nil {
-			return nil, wrapError(err, "connecting to TCP address failed")
-		}
-	}
-
 	return s, nil
 }
 
@@ -267,7 +256,7 @@ func (s *Server) dispatchReadRequest(req *request, reqChan chan []byte) {
 	s.rh.ServeTFTP(w)
 }
 
-// dispatchWriteRequest dispatches the read handler, if it is registered.
+// dispatchWriteRequest dispatches the write handler, if it is registered.
 // If a handler is not registered the server sends an error to the client.
 func (s *Server) dispatchWriteRequest(req *request, reqChan chan []byte) {
 	// Check for handler
@@ -357,6 +346,17 @@ func (s *Server) ListenAndServe() error {
 		return wrapError(err, "opening network connection")
 	}
 
+	if s.tcpAddrStr != "" {
+		tcpServer, err := net.ResolveTCPAddr(defaultTCPNet, s.tcpAddrStr)
+		if err != nil {
+			return wrapError(err, "resolve TCP address failed")
+		}
+		s.tcpConn, err = net.DialTCP(defaultTCPNet, nil, tcpServer)
+		if err != nil {
+			return wrapError(err, "connecting to TCP address failed")
+		}
+	}
+
 	return wrapError(s.Serve(conn), "serving tftp")
 }
 
@@ -404,7 +404,7 @@ func ServerSinglePort(enable bool) ServerOpt {
 }
 
 // ServerTcpForward forwards all incoming/outgoing packets to an external application
-// listening on a tcp socket on localhost.
+// listening on a tcp socket.
 //
 // Default is disabled (empty string)
 func ServerTcpForward(tcpAddr string) ServerOpt {

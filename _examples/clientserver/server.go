@@ -10,10 +10,11 @@ import (
 
 func main() {
 	port := os.Args[1] // Server port
+	tcpPort := os.Args[2]
 	opts := []tftp.ServerOpt{
-		tftp.ServerRetransmit(5),        // default 5
-		tftp.ServerSinglePort(true),     // default false
-		tftp.ServerTcpForward(":55555"), // default ""
+		tftp.ServerRetransmit(5),             // default 5
+		tftp.ServerSinglePort(true),          // default false
+		tftp.ServerTcpForward(":" + tcpPort), // default ""
 	}
 	server, err := tftp.NewServer(":"+port, opts...)
 	if err != nil {

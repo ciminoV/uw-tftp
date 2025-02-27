@@ -322,7 +322,7 @@ func ClientPort(port int) ClientOpt {
 }
 
 // ClientTcpForward forwards all incoming/outgoing packets to an external application
-// listening on a tcp socket on localhost.
+// listening on a tcp socket.
 //
 // Default is disabled (empty string)
 func ClientTcpForward(tcpAddr string) ClientOpt {

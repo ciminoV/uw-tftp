@@ -36,7 +36,7 @@ var defaultOptions = map[string]string{
 // newConn starts listening on a system assigned port and returns an initialized conn
 //
 // udpNet is one of "udp", "udp4", or "udp6"
-// addr is the address of the target client or server
+// addr is the address of the target server
 // tcpConn is the TCP socket of an external application, if specified
 func newConn(udpNet string, mode TransferMode, addr *net.UDPAddr, tcpConn *net.TCPConn) (*conn, error) {
 	// Start listening, an empty UDPAddr will cause the system to assign a port
@@ -54,18 +54,15 @@ func newConn(udpNet string, mode TransferMode, addr *net.UDPAddr, tcpConn *net.T
 		windowsize: defaultWindowsize,
 		retransmit: defaultRetransmit,
 		mode:       mode,
+		tcpConn:    tcpConn,
 	}
 	c.rx.buf = make([]byte, defaultPktsize)
-
-	if tcpConn != nil {
-		c.tcpConn = tcpConn
-	}
 
 	return c, nil
 }
 
 func newSinglePortConn(addr *net.UDPAddr, mode TransferMode, netConn *net.UDPConn, tcpConn *net.TCPConn, reqChan chan []byte) *conn {
-	c := &conn{
+	return &conn{
 		log:        newLogger(addr.String()),
 		remoteAddr: addr,
 		blksize:    defaultBlksize,
@@ -78,12 +75,6 @@ func newSinglePortConn(addr *net.UDPAddr, mode TransferMode, netConn *net.UDPCon
 		netConn:    netConn,
 		tcpConn:    tcpConn,
 	}
-
-	if tcpConn != nil {
-		c.tcpConn = tcpConn
-	}
-
-	return c
 }
 
 // newConnFromHost wraps newConn and looks up the target's address from a string
@@ -112,12 +103,9 @@ func newConnFromHost(udpNet string, mode TransferMode, host string, port int, tc
 			windowsize: defaultWindowsize,
 			retransmit: defaultRetransmit,
 			mode:       mode,
+			tcpConn:    tcpConn,
 		}
 		c.rx.buf = make([]byte, defaultPktsize)
-
-		if tcpConn != nil {
-			c.tcpConn = tcpConn
-		}
 
 		return c, nil
 	}
@@ -998,13 +986,13 @@ func (c *conn) writeToNet(fragment bool) error {
 	var err error
 
 	if c.tcpConn == nil {
-		// Read from the UDP server socket
+		// Write to the UDP server socket
 		if err = c.netConn.SetWriteDeadline(time.Now().Add(c.timeout * time.Duration(c.retransmit))); err != nil {
 			return wrapError(err, "setting network write deadline")
 		}
 		_, err = c.netConn.WriteTo(c.tx.bytes(), c.remoteAddr)
 	} else {
-		// Read from the TCP external socket
+		// Write to the TCP external socket
 		if err = c.tcpConn.SetWriteDeadline(time.Now().Add(c.timeout * time.Duration(c.retransmit))); err != nil {
 			return wrapError(err, "setting network write deadline")
 		}
