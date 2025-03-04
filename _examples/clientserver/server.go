@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"io/ioutil"
 	"log"
 	"os"
@@ -9,17 +10,20 @@ import (
 )
 
 func main() {
-	port := os.Args[1] // Server port
-	tcpPort := os.Args[2]
+	ip := os.Args[1]
+	port := os.Args[2] // Server port
+	tcpPort := os.Args[3]
 	opts := []tftp.ServerOpt{
-		tftp.ServerRetransmit(5),             // default 5
-		tftp.ServerSinglePort(true),          // default false
-		tftp.ServerTcpForward(":" + tcpPort), // default ""
+		tftp.ServerRetransmit(5),                                 // default 5
+		tftp.ServerSinglePort(true),                              // default false
+		tftp.ServerTcpForward(fmt.Sprintf("%s:%s", ip, tcpPort)), // default ""
 	}
-	server, err := tftp.NewServer(":"+port, opts...)
+	server, err := tftp.NewServer(":", opts...)
 	if err != nil {
 		log.Fatal(err)
 	}
+
+	fmt.Printf("ip %s , tcpport %s, port %s", ip, tcpPort, port)
 
 	writeHandler := tftp.WriteHandlerFunc(writeTFTP)
 	server.WriteHandler(writeHandler)

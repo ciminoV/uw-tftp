@@ -26,7 +26,7 @@ func main() {
 	// Get the file info so we can send size
 	fileInfo, err := file.Stat()
 	if err != nil {
-		log.Println("error getting file size:", err)
+		log.Fatalln("error getting file size:", err)
 	}
 
 	// Configuring with a slice of options
@@ -35,13 +35,16 @@ func main() {
 		tftp.ClientWindowsize(10), // default 1
 		// tftp.ClientTimeout(25),    // default 20
 		// tftp.ClientRetransmit(3),  // default 5
-		tftp.ClientTcpForward(clientIp + ":" + clientPort), // default ""
+		tftp.ClientTcpForward(fmt.Sprintf("%s:%s", clientIp, clientPort)), // default ""
 	}
-	client, _ := tftp.NewClient(opts...)
-
-	// Send file
-	err = client.Put(fmt.Sprintf("%s:%s/%s", serverIp, serverPort, filename), file, fileInfo.Size())
+	client, err := tftp.NewClient(opts...)
 	if err != nil {
 		log.Fatalln(err)
 	}
+
+	log.Printf("ip %s , port %s", clientIp, clientPort)
+	log.Printf("ip %s , port %s", serverIp, serverPort)
+
+	// Send file
+	log.Fatalln(client.Put(fmt.Sprintf("%s:%s/%s", serverIp, serverPort, filename), file, fileInfo.Size()))
 }
