@@ -637,8 +637,8 @@ func (c *conn) ackData() stateType {
 	case diff <= c.windowsize:
 		// We missed blocks
 		if c.catchup {
-			// send ack after the whole window is read
-			if (c.rx.block() % c.windowsize) == 0 {
+			// send ack after the whole window is read (or last data block)
+			if (c.rx.block()%c.windowsize) == 0 || c.rx.offset < int(c.blksize) {
 				// TODO: what if #block = 0?
 				if err := c.sendAck(c.block); err != nil {
 					c.err = wrapError(err, "sending missed block(s) ACK")
