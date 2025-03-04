@@ -109,10 +109,11 @@ func (c *Client) Put(url string, r io.Reader, size int64) (err error) {
 
 	// Create connection
 	var conn *conn
-	if c.tcpAddrStr == "" {
-		conn, err = newConnFromHost(c.net, c.mode, u.host, c.port, nil)
-	} else {
+	if c.tcpAddrStr != "" {
 		conn, err = newConnFromHost(c.net, c.mode, u.host, c.port, c.tcpConn)
+	} else {
+		c.log.debug("tcp %v", c.tcpAddrStr)
+		conn, err = newConnFromHost(c.net, c.mode, u.host, c.port, nil)
 	}
 	if err != nil {
 		return err

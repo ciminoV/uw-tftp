@@ -703,8 +703,11 @@ func (c *conn) Close() error {
 
 	if c.reqChan == nil {
 		defer func() {
+			var err error
 			// Close network even if another error occurs
-			err := c.netConn.Close()
+			if c.netConn != nil {
+				err = c.netConn.Close()
+			}
 			// Also close the tcp socket, if any
 			if c.tcpConn != nil {
 				err = c.tcpConn.Close()

@@ -89,6 +89,34 @@ func (s *Server) WriteHandler(wh WriteHandler) {
 	s.wh = wh
 }
 
+// ListenAndServe starts a configured server.
+func (s *Server) ListenAndServe() error {
+	var conn *net.UDPConn
+	if s.tcpAddrStr != "" {
+		tcpServer, err := net.ResolveTCPAddr(defaultTCPNet, s.tcpAddrStr)
+		if err != nil {
+			return wrapError(err, "resolve TCP address failed")
+		}
+		s.tcpConn, err = net.DialTCP(defaultTCPNet, nil, tcpServer)
+		if err != nil {
+			return wrapError(err, "connecting to TCP address failed")
+		}
+	} else {
+		addr, err := net.ResolveUDPAddr(s.net, s.addrStr)
+		if err != nil {
+			return wrapError(err, "resolving server address")
+		}
+		s.addr = addr
+
+		conn, err = net.ListenUDP(s.net, s.addr)
+		if err != nil {
+			return wrapError(err, "opening network connection")
+		}
+	}
+
+	return wrapError(s.Serve(conn), "serving tftp")
+}
+
 // Serve starts the server using an existing UDPConn.
 func (s *Server) Serve(conn *net.UDPConn) error {
 	if s.rh == nil && s.wh == nil {
@@ -203,7 +231,9 @@ func (s *Server) connManager() {
 				dg := datagram{}
 				dg.writeError(ErrCodeUnknownTransferID, "Unexpected TID")
 				// Don't care about an error here, just a courtesy
-				_, _ = s.conn.WriteTo(dg.bytes(), req.addr)
+				if s.conn != nil {
+					_, _ = s.conn.WriteTo(dg.bytes(), req.addr)
+				}
 				s.log.debug("Unexpected datagram: %s", dg)
 			}
 		case addr := <-s.reqDoneChan:
@@ -331,33 +361,6 @@ func (s *Server) newConn(req *request, reqChan chan []byte) (*conn, func() error
 	}
 
 	return c, closer, nil
-}
-
-// ListenAndServe starts a configured server.
-func (s *Server) ListenAndServe() error {
-	addr, err := net.ResolveUDPAddr(s.net, s.addrStr)
-	if err != nil {
-		return wrapError(err, "resolving server address")
-	}
-	s.addr = addr
-
-	conn, err := net.ListenUDP(s.net, s.addr)
-	if err != nil {
-		return wrapError(err, "opening network connection")
-	}
-
-	if s.tcpAddrStr != "" {
-		tcpServer, err := net.ResolveTCPAddr(defaultTCPNet, s.tcpAddrStr)
-		if err != nil {
-			return wrapError(err, "resolve TCP address failed")
-		}
-		s.tcpConn, err = net.DialTCP(defaultTCPNet, nil, tcpServer)
-		if err != nil {
-			return wrapError(err, "connecting to TCP address failed")
-		}
-	}
-
-	return wrapError(s.Serve(conn), "serving tftp")
 }
 
 // ServerOpt is a function that configures a Server.
