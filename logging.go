@@ -7,6 +7,7 @@ package tftp // import "pack.ag/tftp"
 import (
 	"log"
 	"os"
+	"time"
 )
 
 var (
@@ -31,7 +32,7 @@ type logger struct {
 }
 
 func newLogger(name string) *logger {
-	prefix := "tftp|"
+	prefix := time.Now().Format("15:04:05") + "|"
 	if name != "" {
 		prefix += name + "|"
 	}
