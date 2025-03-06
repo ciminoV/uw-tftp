@@ -990,6 +990,18 @@ func (c *conn) readFromNet() (net.Addr, error) {
 func (c *conn) writeToNet(fragment bool) error {
 	var err error
 
+	if fragment {
+		for i := 0; i < c.tx.offset; i += defaultPktsize {
+			if c.tcpConn == nil {
+				_, err = c.netConn.WriteTo(c.tx.getBytes(i, i+defaultPktsize), c.remoteAddr)
+			} else {
+				_, err = c.tcpConn.Write(c.tx.getBytes(i, i+defaultPktsize))
+			}
+		}
+
+		return err
+	}
+
 	if c.tcpConn == nil {
 		// Write to the UDP server socket
 		if err = c.netConn.SetWriteDeadline(time.Now().Add(c.timeout * time.Duration(c.retransmit))); err != nil {
@@ -1003,16 +1015,6 @@ func (c *conn) writeToNet(fragment bool) error {
 		}
 		_, err = c.tcpConn.Write(c.tx.bytes())
 		time.Sleep(100 * time.Microsecond)
-	}
-
-	if fragment {
-		for i := 0; i < c.tx.offset; i += defaultPktsize {
-			if c.tcpConn == nil {
-				_, err = c.netConn.WriteTo(c.tx.getBytes(i, i+defaultPktsize), c.remoteAddr)
-			} else {
-				_, err = c.tcpConn.Write(c.tx.getBytes(i, i+defaultPktsize))
-			}
-		}
 	}
 
 	return err
