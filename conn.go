@@ -847,6 +847,7 @@ func (c *conn) getAck() stateType {
 			c.txBuf.UnreadSlots(int(c.window))
 			c.block -= c.window
 			c.done = false
+			c.window = 0
 		} else {
 			c.txBuf.UnreadSlots(int(c.windowsize))
 			c.block -= c.windowsize
