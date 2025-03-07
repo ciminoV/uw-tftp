@@ -380,7 +380,7 @@ func (c *conn) error(err error, desc string) stateType {
 	}
 }
 
-// write writes adds data to txBuf and writes data to netConn in chunks of
+// write writes data to txBuf and writes data to netConn in chunks of
 // blksize, until the last chunk of <blksize, which signals transfer completion.
 func (c *conn) write() stateType {
 	// Copy to buffer
@@ -636,20 +636,6 @@ func (c *conn) ackData() stateType {
 		return c.read
 	case diff <= c.windowsize:
 		// We missed blocks
-		if c.catchup {
-			// send ack after the whole window is read (or last data block)
-			if (c.rx.block()%c.windowsize) == 0 || c.rx.offset < int(c.blksize) {
-				// TODO: what if #block = 0?
-				if err := c.sendAck(c.block); err != nil {
-					c.err = wrapError(err, "sending missed block(s) ACK")
-					return nil
-				}
-				c.triesAck++
-				c.catchup = false
-			}
-			// Ignore, we need to catchup with server
-			return c.read
-		}
 		c.log.trace("ackData diff: %d, current block: %d, rx block %d", diff, c.block, c.rx.block())
 
 		// ACK previous block, reset window, and return sequence error
@@ -661,9 +647,13 @@ func (c *conn) ackData() stateType {
 			c.err = wrapError(ErrMaxRetries, "reading data")
 			return nil
 		}
+		if err := c.sendAck(c.block); err != nil {
+			c.err = wrapError(err, "sending missed block(s) ACK")
+			return nil
+		}
+		c.triesAck++
 
 		c.window = 0
-		c.catchup = true
 
 		return c.read
 	}
