@@ -592,6 +592,11 @@ func (c *conn) readData() stateType {
 
 // ackData handles block sequence, windowing, and acknowledgements
 func (c *conn) ackData() stateType {
+	if c.rx.block() <= c.block {
+		c.log.debug("Blocks %d already received.", c.rx.block())
+		return c.read
+	}
+
 	switch diff := c.rx.block() - c.block; {
 	case diff == 1:
 		// Next block as expected; increment window and block
@@ -600,43 +605,15 @@ func (c *conn) ackData() stateType {
 		c.window++
 		c.triesAck = 0
 		c.catchup = false
-	case diff == 0:
-		// Last block or already received window (or same block if window = 1)
-		if c.catchup || c.windowsize == 1 {
-			c.log.debug("Block %d already received. Resending ACK for %d", c.rx.block(), c.block)
-			if err := c.sendAck(c.block); err != nil {
-				c.err = wrapError(err, "sending missed ACK")
-				return nil
-			}
-			c.catchup = false
-			c.triesAck++
-		}
-
-		c.log.trace("ackData diff: %d, current block: %d, rx block %d", diff, c.block, c.rx.block())
-
-		return c.read
-	case diff > c.windowsize:
-		// Sender is behind, missed ACK
-		if c.catchup {
-			return c.read
-		}
-		c.log.trace("ackData diff: %d, current block: %d, rx block %d", diff, c.block, c.rx.block())
-		c.log.debug("Blocks from %d to %d already received.", c.rx.block(), c.block)
-
-		if c.triesAck >= c.retransmit {
-			c.log.debug("Max retries exceeded")
-			c.sendError(ErrCodeNotDefined, "max retries reached")
-			c.err = wrapError(ErrMaxRetries, "reading data")
-			return nil
-		}
-
-		c.window = 0
-		c.catchup = true
-
-		return c.read
 	case diff <= c.windowsize:
 		// We missed blocks
 		c.log.trace("ackData diff: %d, current block: %d, rx block %d", diff, c.block, c.rx.block())
+
+		if c.catchup {
+			// Ignore, we need to catchup with server
+			// TODO: store out of order blocks for next rx
+			return c.read
+		}
 
 		// ACK previous block, reset window, and return sequence error
 		c.log.debug("Missing blocks between %d and %d. Resetting to block %d", c.block, c.rx.block(), c.block)
@@ -654,6 +631,7 @@ func (c *conn) ackData() stateType {
 		c.triesAck++
 
 		c.window = 0
+		c.catchup = true
 
 		return c.read
 	}
