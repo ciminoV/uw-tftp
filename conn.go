@@ -139,17 +139,18 @@ type conn struct {
 	retransmit int // Number of times an individual datagram will be retransmitted on error
 
 	// Track state of transfer
-	optionsParsed bool   // Whether TFTP options have been parsed yet
-	window        uint16 // Packets sent since last ACK
-	block         uint16 // Current block #
-	catchup       bool   // Ignore incoming blocks from a window we reset
-	p             []byte // bytes to be read/written (depending on send/receive)
-	n             int    // byte count read/written
-	tries         int    // retry counter
-	triesAck      int    // retry ack counter
-	err           error  // error has occurreds
-	closing       bool   // connection is closing
-	done          bool   // the transfer is complete
+	optionsParsed bool              // Whether TFTP options have been parsed yet
+	window        uint16            // Packets sent since last ACK
+	block         uint16            // Current block #
+	unackWin      map[uint16][]byte // Window of blocks not yet acked (#block > current block #)
+	catchup       bool              // Ignore incoming blocks from a window we reset
+	p             []byte            // bytes to be read/written (depending on send/receive)
+	n             int               // byte count read/written
+	tries         int               // retry counter
+	triesAck      int               // retry ack counter
+	err           error             // error has occurreds
+	closing       bool              // connection is closing
+	done          bool              // the transfer is complete
 
 	// Buffers
 	buf   []byte       // incoming data from, sized to blksize + headers
@@ -484,6 +485,8 @@ func (c *conn) readSetup() stateType {
 		c.rx.buf = make([]byte, needed)
 	}
 
+	c.uackWin = make(map[uint16][]byte, c.windowsize)
+
 	// If there we're not options negotiated, send ACK
 	// Client never sends OACK
 	if len(ackOpts) == 0 || c.isClient {
@@ -605,13 +608,51 @@ func (c *conn) ackData() stateType {
 		c.window++
 		c.triesAck = 0
 		c.catchup = false
+
+		// Unacked block received in order
+		if _, ok := c.unackWin[c.block]; ok {
+			delete(c.unackWin, c.block)
+		}
 	case diff <= c.windowsize:
 		// We missed blocks
 		c.log.trace("ackData diff: %d, current block: %d, rx block %d", diff, c.block, c.rx.block())
 
+		if data, ok := c.unackWin[c.block+1]; ok {
+			c.log.debug("Block %d found in unacked window.", c.block+1)
+
+			_, err := c.rxBuf.Write(data)
+			if err != nil {
+				c.err = wrapError(err, "writing to rxBuf after read")
+				return nil
+			}
+
+			c.block++
+			c.window++
+			c.triesAck = 0
+			c.catchup = false
+			delete(c.unackWin, c.block)
+
+			// We missed other blocks
+			if diff-1 > 1 {
+				return c.ackData
+			}
+
+			// Increase to last received block
+			c.block++
+			c.window++
+			break
+		} else {
+			c.log.debug("Block %d not found in extra buffer.", c.block+1)
+			if _, ok := c.unackWin[c.rx.block()]; !ok {
+				c.log.debug("Saving %d in extra buffer.", c.rx.block())
+				c.unackWin[c.rx.block()] = c.rx.data()
+			}
+		}
+
+		// TODO-FIX: if in a subsequent RETX the same packet is lost
+		// catchup still true and no further ack is sent
 		if c.catchup {
 			// Ignore, we need to catchup with server
-			// TODO: store out of order blocks for next rx
 			return c.read
 		}
 
