@@ -809,20 +809,9 @@ func (c *conn) getAck() stateType {
 	sAddr, err := c.readFromNet()
 	if err != nil {
 		c.log.debug("Error waiting for ACK: %v", err)
-
-		if c.window > 0 {
-			// last window retx
-			c.txBuf.UnreadSlots(int(c.window))
-			c.block -= c.window
-			c.done = false
-			c.window = 0
-		} else {
-			c.txBuf.UnreadSlots(int(c.windowsize))
-			c.block -= c.windowsize
-		}
+		c.unreadWindow()
 
 		c.log.trace("Resending block %d\n", c.block+1)
-
 		return c.writeData
 	}
 
@@ -853,6 +842,12 @@ func (c *conn) getAck() stateType {
 
 	// Check opcode
 	switch op := c.rx.opcode(); op {
+	case opCodeOACK:
+		c.log.trace("Received duplicate OACK, excepting ACK for block %d", c.block)
+		c.unreadWindow()
+
+		c.log.trace("Resending block %d\n", c.block+1)
+		return c.writeData
 	case opCodeACK:
 		c.log.trace("Got ACK for block %d\n", c.rx.block())
 		// continue on
@@ -886,6 +881,19 @@ func (c *conn) getAck() stateType {
 		return c.write
 	}
 	return c.writeData
+}
+
+func (c *conn) unreadWindow() {
+	if c.window > 0 {
+		// last window retx
+		c.txBuf.UnreadSlots(int(c.window))
+		c.block -= c.window
+		c.done = false
+		c.window = 0
+	} else {
+		c.txBuf.UnreadSlots(int(c.windowsize))
+		c.block -= c.windowsize
+	}
 }
 
 // remoteError formats the error in rx, sets err and returns the error.
