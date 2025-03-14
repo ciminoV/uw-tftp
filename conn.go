@@ -142,6 +142,7 @@ type conn struct {
 	optionsParsed bool              // Whether TFTP options have been parsed yet
 	window        uint16            // Packets sent since last ACK
 	block         uint16            // Current block #
+	unackBlock    uint16            // Last block # received and not yet acked
 	unackWin      map[uint16][]byte // Window of blocks not yet acked (#block > current block #)
 	catchup       bool              // Ignore incoming blocks from a window we reset
 	p             []byte            // bytes to be read/written (depending on send/receive)
@@ -485,7 +486,7 @@ func (c *conn) readSetup() stateType {
 		c.rx.buf = make([]byte, needed)
 	}
 
-	c.uackWin = make(map[uint16][]byte, c.windowsize)
+	c.unackWin = make(map[uint16][]byte, c.windowsize)
 
 	// If there we're not options negotiated, send ACK
 	// Client never sends OACK
@@ -506,6 +507,8 @@ func (c *conn) readSetup() stateType {
 	if c.isClient {
 		return nil
 	}
+
+	c.unackBlock = ^uint16(0)
 
 	return c.read
 }
@@ -607,7 +610,7 @@ func (c *conn) ackData() stateType {
 		c.block++
 		c.window++
 		c.triesAck = 0
-		c.catchup = false
+		c.unackBlock = c.block + c.windowsize
 
 		// Unacked block received in order
 		if _, ok := c.unackWin[c.block]; ok {
@@ -629,7 +632,6 @@ func (c *conn) ackData() stateType {
 			c.block++
 			c.window++
 			c.triesAck = 0
-			c.catchup = false
 			delete(c.unackWin, c.block)
 
 			// We missed other blocks
@@ -649,10 +651,9 @@ func (c *conn) ackData() stateType {
 			}
 		}
 
-		// TODO-FIX: if in a subsequent RETX the same packet is lost
-		// catchup still true and no further ack is sent
-		if c.catchup {
-			// Ignore, we need to catchup with server
+		// Ignore, we need to catchup with server
+		if c.unackBlock < c.rx.block() {
+			c.unackBlock = c.rx.block()
 			return c.read
 		}
 
@@ -669,10 +670,10 @@ func (c *conn) ackData() stateType {
 			c.err = wrapError(err, "sending missed block(s) ACK")
 			return nil
 		}
-		c.triesAck++
 
+		c.triesAck++
 		c.window = 0
-		c.catchup = true
+		c.unackBlock = c.rx.block()
 
 		return c.read
 	}
