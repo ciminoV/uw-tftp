@@ -20,8 +20,8 @@ const (
 	defaultMode       = ModeOctet
 	defaultUDPNet     = "udp"
 	defaultTCPNet     = "tcp"
-	defaultTimeout    = time.Second * 30
-	defaultBlksize    = 60
+	defaultTimeout    = time.Second * 60
+	defaultBlksize    = 55
 	defaultHdrsize    = 4
 	defaultPktsize    = defaultHdrsize + defaultBlksize
 	defaultWindowsize = 1
@@ -1032,7 +1032,7 @@ func (c *conn) writeToNet(fragment bool) error {
 			return wrapError(err, "setting network write deadline")
 		}
 		_, err = c.tcpConn.Write(c.tx.bytes())
-		time.Sleep(100 * time.Microsecond)
+		time.Sleep(1 * time.Millisecond)
 	}
 
 	return err
