@@ -64,10 +64,10 @@ const (
 	ModeOctet TransferMode = "octet"
 	modeMail  TransferMode = "mail"
 
-	optBlocksize    = "blksize"
-	optTimeout      = "timeout"
-	optTransferSize = "tsize"
-	optWindowSize   = "windowsize"
+	optBlocksize    = "bs"
+	optTimeout      = "to"
+	optTransferSize = "ts"
+	optWindowSize   = "ws"
 )
 
 // TransferMode is a TFTP transer mode
