@@ -1032,7 +1032,7 @@ func (c *conn) writeToNet(fragment bool) error {
 			return wrapError(err, "setting network write deadline")
 		}
 		_, err = c.tcpConn.Write(c.tx.bytes())
-		time.Sleep(1 * time.Millisecond)
+		time.Sleep(1500 * time.Microsecond)
 	}
 
 	return err
