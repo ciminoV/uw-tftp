@@ -23,7 +23,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	fmt.Printf("ip %s , tcpport %s, port %s", ip, tcpPort, port)
+	fmt.Printf("ip %s , tcpport %s, port %s\n", ip, tcpPort, port)
 
 	writeHandler := tftp.WriteHandlerFunc(writeTFTP)
 	server.WriteHandler(writeHandler)

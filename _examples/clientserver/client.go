@@ -34,7 +34,7 @@ func main() {
 	// Configuring with a slice of options
 	opts := []tftp.ClientOpt{
 		tftp.ClientBlocksize(55),  // default 60
-		tftp.ClientWindowsize(20), // default 1
+		tftp.ClientWindowsize(13), // default 1
 		tftp.ClientTimeout(200),   // default 60
 		// tftp.ClientRetransmit(3),  // default 5
 		tftp.ClientTcpForward(fmt.Sprintf("%s:%s", clientIp, clientPort)), // default ""
