@@ -30,7 +30,7 @@ const (
 
 // All connections will use these options unless overridden.
 var defaultOptions = map[string]string{
-	optTransferSize: "0", // Enable tsize
+	// optTransferSize: "0", // Enable tsize
 }
 
 // newConn starts listening on a system assigned port and returns an initialized conn

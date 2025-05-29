@@ -17,6 +17,7 @@ func main() {
 		tftp.ClientBlocksize(55),  // default 60
 		tftp.ClientWindowsize(13), // default 1
 		tftp.ClientTimeout(45),    // default 60
+		// tftp.ClientTransferSize(true),
 		// tftp.ClientRetransmit(3),// default 10
 	}
 
