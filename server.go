@@ -161,7 +161,7 @@ func (s *Server) Serve(conn *net.UDPConn) error {
 			}
 
 			// Fragmented WRQ/RRQ
-			if n > 0 && (buf[1] == byte(opCodeRRQ) || buf[1] == byte(opCodeWRQ)) {
+			if n > 0 && (buf[0] == byte(opCodeRRQ) || buf[0] == byte(opCodeWRQ)) {
 				if buf[offset+n-1] != 0x0 {
 					offset += n
 					s.log.trace("Incomplete request from %v: %d bytes received", addr, offset)
@@ -180,8 +180,8 @@ func (s *Server) Serve(conn *net.UDPConn) error {
 				return wrapError(err, "reading from conn")
 			}
 
-			if n < 2 {
-				continue // Must be at least 2 bytes to read opcode
+			if n < sizeofOpcode {
+				continue // Must be at least 1 bytes to read opcode
 			}
 
 			// Make a copy of the received data
