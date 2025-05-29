@@ -22,10 +22,10 @@ const (
 	defaultTCPNet     = "tcp"
 	defaultTimeout    = time.Second * 60
 	defaultBlksize    = 55
-	defaultHdrsize    = 4
+	defaultHdrsize    = 3
 	defaultPktsize    = defaultHdrsize + defaultBlksize
 	defaultWindowsize = 1
-	defaultRetransmit = 5
+	defaultRetransmit = 10
 )
 
 // All connections will use these options unless overridden.
@@ -170,6 +170,7 @@ type conn struct {
 // sendWriteRequest sends WRQ to server and negotiates transfer options
 func (c *conn) sendWriteRequest(filename string, opts map[string]string) error {
 	c.isSender = true
+
 	// Build WRQ
 	c.tx.writeWriteReq(filename, c.mode, opts)
 
@@ -919,7 +920,7 @@ func (c *conn) getAck() stateType {
 
 	c.tries = 0
 
-	if c.tx.opcode() == opCodeOACK { // TODO: Avoid checking tx opcode?
+	if c.tx.opcode() == opCodeOACK {
 		return c.write
 	}
 	return c.writeData

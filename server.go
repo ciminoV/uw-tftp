@@ -202,7 +202,7 @@ func (s *Server) connManager() {
 	for {
 		select {
 		case req := <-s.dispatchChan:
-			switch req.pkt[1] {
+			switch req.pkt[0] {
 			case byte(opCodeRRQ): // RRQ
 				if s.singlePort {
 					reqChan = make(chan []byte, 64)

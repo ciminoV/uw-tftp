@@ -12,7 +12,7 @@ import (
 	"strings"
 )
 
-type opcode uint16
+type opcode uint8
 
 func (o opcode) String() string {
 	name, ok := opcodeStrings[o]
@@ -23,7 +23,7 @@ func (o opcode) String() string {
 }
 
 // ErrorCode is a TFTP error code as defined in RFC 1350
-type ErrorCode uint16
+type ErrorCode uint8
 
 func (e ErrorCode) String() string {
 	name, ok := errorStrings[e]
@@ -59,15 +59,20 @@ const (
 	ErrCodeNoSuchUser ErrorCode = 0x7
 
 	// ModeNetASCII is the string for netascii transfer mode
-	ModeNetASCII TransferMode = "netascii"
+	ModeNetASCII TransferMode = "na"
 	// ModeOctet is the string for octet/binary transfer mode
-	ModeOctet TransferMode = "octet"
-	modeMail  TransferMode = "mail"
+	ModeOctet TransferMode = "ot"
 
 	optBlocksize    = "bs"
 	optTimeout      = "to"
 	optTransferSize = "ts"
 	optWindowSize   = "ws"
+
+	sizeofOpcode  = 1 // Size of a opcode in bytes
+	sizeofErrcode = 2 // Size of an error code in bytes
+	sizeofBlock   = 2 // Size of a block number in bytes
+	sizeofHdr     = sizeofOpcode + sizeofBlock
+	sizeofErrHdr  = sizeofOpcode + sizeofErrcode
 )
 
 // TransferMode is a TFTP transer mode
@@ -154,24 +159,24 @@ func (d *datagram) reset(size int) {
 
 // DATAGRAM CONSTRUCTORS
 func (d *datagram) writeAck(block uint16) {
-	d.reset(2 + 2)
+	d.reset(sizeofOpcode + sizeofBlock)
 
-	d.writeUint16(uint16(opCodeACK))
+	d.writeUint8(uint8(opCodeACK))
 	d.writeUint16(block)
 }
 
 func (d *datagram) writeData(block uint16, data []byte) {
-	d.reset(2 + 2 + len(data))
+	d.reset(sizeofOpcode + sizeofBlock + len(data))
 
-	d.writeUint16(uint16(opCodeDATA))
+	d.writeUint8(uint8(opCodeDATA))
 	d.writeUint16(block)
 	d.writeBytes(data)
 }
 
 func (d *datagram) writeError(code ErrorCode, msg string) {
-	d.reset(2 + 2 + len(msg) + 1)
+	d.reset(sizeofOpcode + sizeofErrcode + len(msg) + 1)
 
-	d.writeUint16(uint16(opCodeERROR))
+	d.writeUint8(uint8(opCodeERROR))
 	d.writeUint16(uint16(code))
 	d.writeString(msg)
 	d.writeNull()
@@ -190,9 +195,9 @@ func (d *datagram) writeOptionAck(options map[string]string) {
 	for opt, val := range options {
 		optLen += len(opt) + 1 + len(val) + 1
 	}
-	d.reset(2 + optLen)
+	d.reset(sizeofOpcode + optLen)
 
-	d.writeUint16(uint16(opCodeOACK))
+	d.writeUint8(uint8(opCodeOACK))
 
 	for opt, val := range options {
 		d.writeOption(opt, val)
@@ -201,17 +206,13 @@ func (d *datagram) writeOptionAck(options map[string]string) {
 
 // Combines duplicate logic from RRQ and WRQ
 func (d *datagram) writeReq(o opcode, filename string, mode TransferMode, options map[string]string) {
-	// This is ugly, could just set buf to 512
-	// or use a bytes buffer. Intend to switch to bytes buffer
-	// after implementing all RFCs so that perf can be compared
-	// with a reasonable block and window size
 	optLen := 0
 	for opt, val := range options {
 		optLen += len(opt) + 1 + len(val) + 1
 	}
-	d.reset(2 + len(filename) + 1 + len(mode) + 1 + optLen)
+	d.reset(sizeofOpcode + len(filename) + 1 + len(mode) + 1 + optLen)
 
-	d.writeUint16(uint16(o))
+	d.writeUint8(uint8(o))
 	d.writeString(filename)
 	d.writeNull()
 	d.writeString(string(mode))
@@ -226,40 +227,40 @@ func (d *datagram) writeReq(o opcode, filename string, mode TransferMode, option
 
 // Block # from DATA and ACK datagrams
 func (d *datagram) block() uint16 {
-	return binary.BigEndian.Uint16(d.buf[2:4])
+	return binary.BigEndian.Uint16(d.buf[sizeofOpcode:sizeofHdr])
 }
 
 // Data from DATA datagram
 func (d *datagram) data() []byte {
-	return d.buf[4:d.offset]
+	return d.buf[sizeofHdr:d.offset]
 }
 
 // ErrorCode from ERROR datagram
 func (d *datagram) errorCode() ErrorCode {
-	return ErrorCode(binary.BigEndian.Uint16(d.buf[2:4]))
+	return ErrorCode(binary.BigEndian.Uint16(d.buf[sizeofOpcode:sizeofErrHdr]))
 }
 
 // ErrMsg from ERROR datagram
 func (d *datagram) errMsg() string {
 	end := d.offset - 1
-	return string(d.buf[4:end])
+	return string(d.buf[sizeofErrHdr:end])
 }
 
 // Filename from RRQ and WRQ datagrams
 func (d *datagram) filename() string {
-	offset := bytes.IndexByte(d.buf[2:], 0x0) + 2
-	return string(d.buf[2:offset])
+	offset := bytes.IndexByte(d.buf[sizeofOpcode:], 0x0) + sizeofOpcode
+	return string(d.buf[sizeofOpcode:offset])
 }
 
 // Mode from RRQ and WRQ datagrams
 func (d *datagram) mode() TransferMode {
-	fields := bytes.Split(d.buf[2:], []byte{0x0})
+	fields := bytes.Split(d.buf[sizeofOpcode:], []byte{0x0})
 	return TransferMode(fields[1])
 }
 
 // Opcode from all datagrams
 func (d *datagram) opcode() opcode {
-	return opcode(binary.BigEndian.Uint16(d.buf[:2]))
+	return opcode(d.buf[0])
 }
 
 type options map[string]string
@@ -273,10 +274,11 @@ func (o options) String() string {
 	return "{" + strings.Join(opts, "; ") + "}"
 }
 
+// options from RRQ and WRQ datagrams
 func (d *datagram) options() options {
 	options := make(options)
 
-	optSlice := bytes.Split(d.buf[2:d.offset-1], []byte{0x0}) // d.buf[2:d.offset-1] = file -> just before final NULL
+	optSlice := bytes.Split(d.buf[sizeofOpcode:d.offset-1], []byte{0x0}) // d.buf[2:d.offset-1] = file -> just before final NULL
 	if op := d.opcode(); op == opCodeRRQ || op == opCodeWRQ {
 		optSlice = optSlice[2:] // Remove filename, mode
 	}
@@ -307,6 +309,11 @@ func (d *datagram) writeUint16(i uint16) {
 	d.offset += 2
 }
 
+func (d *datagram) writeUint8(i uint8) {
+	d.buf[d.offset] = i
+	d.offset++
+}
+
 func (d *datagram) writeOption(o string, v string) {
 	d.writeString(o)
 	d.writeNull()
@@ -314,11 +321,9 @@ func (d *datagram) writeOption(o string, v string) {
 	d.writeNull()
 }
 
-// VALIDATION
-
 func (d *datagram) validate() error {
 	switch {
-	case d.offset < 2:
+	case d.offset < sizeofOpcode:
 		return errors.New("Datagram has no opcode")
 	case d.opcode() > 6:
 		return errors.New("Invalid opcode")
@@ -331,36 +336,34 @@ func (d *datagram) validate() error {
 			return errors.New("No filename provided")
 		case d.buf[d.offset-1] != 0x0: // End with NULL
 			return fmt.Errorf("Corrupt %v datagram", d.opcode())
-		case bytes.Count(d.buf[2:d.offset], []byte{0x0})%2 != 0: // Number of NULL chars is not even
+		case bytes.Count(d.buf[sizeofOpcode:d.offset], []byte{0x0})%2 != 0: // Number of NULL chars is not even
 			return fmt.Errorf("Corrupt %v datagram", d.opcode())
 		default:
 			switch d.mode() {
 			case ModeNetASCII, ModeOctet:
 				break
-			case modeMail:
-				return errors.New("MAIL transfer mode is unsupported")
 			default:
 				return errors.New("Invalid transfer mode")
 			}
 		}
 	case opCodeACK, opCodeDATA:
-		if d.offset < 4 {
+		if d.offset < sizeofHdr {
 			return errors.New("Corrupt block number")
 		}
 	case opCodeERROR:
 		switch {
-		case d.offset < 5:
+		case d.offset < sizeofErrHdr+1:
 			return errors.New("Corrupt ERROR datagram")
 		case d.buf[d.offset-1] != 0x0:
 			return errors.New("Corrupt ERROR datagram")
-		case bytes.Count(d.buf[4:d.offset], []byte{0x0}) > 1:
+		case bytes.Count(d.buf[sizeofErrHdr:d.offset], []byte{0x0}) > 1:
 			return errors.New("Corrupt ERROR datagram")
 		}
 	case opCodeOACK:
 		switch {
 		case d.buf[d.offset-1] != 0x0:
 			return errors.New("Corrupt OACK datagram")
-		case bytes.Count(d.buf[2:d.offset], []byte{0x0})%2 != 0: // Number of NULL chars is not even
+		case bytes.Count(d.buf[sizeofOpcode:d.offset], []byte{0x0})%2 != 0: // Number of NULL chars is not even
 			return errors.New("Corrupt OACK datagram")
 		}
 	}
