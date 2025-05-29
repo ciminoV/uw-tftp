@@ -181,7 +181,7 @@ func (s *Server) Serve(conn *net.UDPConn) error {
 			}
 
 			if n < sizeofOpcode {
-				continue // Must be at least 1 bytes to read opcode
+				continue // Must be at least 1 byte to read opcode
 			}
 
 			// Make a copy of the received data
@@ -308,12 +308,13 @@ func (s *Server) dispatchWriteRequest(req *request, reqChan chan []byte) {
 
 	// Create request
 	w := &writeRequest{conn: c, name: c.rx.filename()}
-
-	// parse options to get size
-	c.log.trace("performing write setup")
-	c.readSetup()
-
 	s.wh.ReceiveTFTP(w)
+
+	// No error occurred
+	if !c.done {
+		c.log.trace("Performing write setup")
+		c.readSetup()
+	}
 }
 
 func (s *Server) newConn(req *request, reqChan chan []byte) (*conn, func() error, error) {

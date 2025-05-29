@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io/ioutil"
 	"log"
@@ -49,19 +50,24 @@ func main() {
 
 // Write handler function
 func writeTFTP(w tftp.WriteRequest) {
-	log.Printf("Receive from %v", w.Addr())
+	log.Printf("Receive %s from %v", w.Name(), w.Addr())
 
-	// Read the data from the client into memory
-	data, err := ioutil.ReadAll(w)
-	if err != nil {
-		log.Fatalln(err)
-		return
+	if _, err := os.Stat("./" + w.Name()); errors.Is(err, os.ErrNotExist) {
+		// Read the data from the client into memory
+		data, err := ioutil.ReadAll(w)
+		if err != nil {
+			log.Fatalln(err)
+			return
+		}
+
+		err = os.WriteFile(w.Name(), []byte(data), 0644)
+		if err != nil {
+			log.Fatalln(err)
+		}
+
+		log.Printf("File %s written", w.Name())
+	} else {
+
+		w.WriteError(tftp.ErrCodeFileAlreadyExists, "File exists")
 	}
-
-	err = os.WriteFile(w.Name(), []byte(data), 0644)
-	if err != nil {
-		log.Fatalln(err)
-	}
-
-	log.Printf("File %s written", w.Name())
 }

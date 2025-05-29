@@ -22,7 +22,7 @@ const (
 	defaultTCPNet     = "tcp"
 	defaultTimeout    = time.Second * 60
 	defaultBlksize    = 55
-	defaultHdrsize    = 3
+	defaultHdrsize    = sizeofHdr
 	defaultPktsize    = defaultHdrsize + defaultBlksize
 	defaultWindowsize = 1
 	defaultRetransmit = 10
@@ -151,7 +151,7 @@ type conn struct {
 	triesAck      int               // retry ack counter
 	err           error             // error has occurreds
 	closing       bool              // connection is closing
-	done          bool              // the transfer is complete
+	done          bool              // the transfer is complete (or error occurred)
 
 	// Buffers
 	buf   []byte       // incoming data from, sized to blksize + headers
