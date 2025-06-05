@@ -31,6 +31,7 @@ const (
 // All connections will use these options unless overridden.
 var defaultOptions = map[string]string{
 	// optTransferSize: "0", // Enable tsize
+	// optMode: string(defaultMode),
 }
 
 // newConn starts listening on a system assigned port and returns an initialized conn
@@ -38,7 +39,7 @@ var defaultOptions = map[string]string{
 // udpNet is one of "udp", "udp4", or "udp6"
 // addr is the address of the target server
 // tcpConn is the TCP socket of an external application, if specified
-func newConn(udpNet string, mode TransferMode, addr *net.UDPAddr, tcpConn *net.TCPConn) (*conn, error) {
+func newConn(udpNet string, addr *net.UDPAddr, tcpConn *net.TCPConn) (*conn, error) {
 	// Start listening, an empty UDPAddr will cause the system to assign a port
 	netConn, err := net.ListenUDP(udpNet, &net.UDPAddr{})
 	if err != nil {
@@ -53,7 +54,7 @@ func newConn(udpNet string, mode TransferMode, addr *net.UDPAddr, tcpConn *net.T
 		timeout:    defaultTimeout,
 		windowsize: defaultWindowsize,
 		retransmit: defaultRetransmit,
-		mode:       mode,
+		mode:       defaultMode,
 		tcpConn:    tcpConn,
 	}
 	c.rx.buf = make([]byte, defaultPktsize)
@@ -61,7 +62,7 @@ func newConn(udpNet string, mode TransferMode, addr *net.UDPAddr, tcpConn *net.T
 	return c, nil
 }
 
-func newSinglePortConn(addr *net.UDPAddr, mode TransferMode, netConn *net.UDPConn, tcpConn *net.TCPConn, reqChan chan []byte) *conn {
+func newSinglePortConn(addr *net.UDPAddr, netConn *net.UDPConn, tcpConn *net.TCPConn, reqChan chan []byte) *conn {
 	return &conn{
 		log:        newLogger(addr.String()),
 		remoteAddr: addr,
@@ -69,7 +70,7 @@ func newSinglePortConn(addr *net.UDPAddr, mode TransferMode, netConn *net.UDPCon
 		timeout:    defaultTimeout,
 		windowsize: defaultWindowsize,
 		retransmit: defaultRetransmit,
-		mode:       mode,
+		mode:       defaultMode,
 		buf:        make([]byte, defaultPktsize),
 		reqChan:    reqChan,
 		netConn:    netConn,
@@ -80,7 +81,7 @@ func newSinglePortConn(addr *net.UDPAddr, mode TransferMode, netConn *net.UDPCon
 // newConnFromHost wraps newConn and looks up the target's address from a string
 //
 // This function is used by Client
-func newConnFromHost(udpNet string, mode TransferMode, host string, port int, tcpConn *net.TCPConn) (*conn, error) {
+func newConnFromHost(udpNet string, host string, port int, tcpConn *net.TCPConn) (*conn, error) {
 	// Resolve server
 	addr, err := net.ResolveUDPAddr(udpNet, host)
 	if err != nil {
@@ -102,7 +103,7 @@ func newConnFromHost(udpNet string, mode TransferMode, host string, port int, tc
 			timeout:    defaultTimeout,
 			windowsize: defaultWindowsize,
 			retransmit: defaultRetransmit,
-			mode:       mode,
+			mode:       defaultMode,
 			tcpConn:    tcpConn,
 		}
 		c.rx.buf = make([]byte, defaultPktsize)
@@ -110,7 +111,7 @@ func newConnFromHost(udpNet string, mode TransferMode, host string, port int, tc
 		return c, nil
 	}
 
-	return newConn(udpNet, mode, addr, tcpConn)
+	return newConn(udpNet, addr, tcpConn)
 }
 
 // conn handles TFTP read and write requests
@@ -472,14 +473,15 @@ func (c *conn) startRead() stateType {
 // first read.
 func (c *conn) readSetup() stateType {
 	c.reader = &c.rxBuf
-	if c.mode == ModeNetASCII {
-		c.reader = netascii.NewReader(c.reader)
-	}
 
 	ackOpts, err := c.parseOptions()
 	if err != nil {
 		c.err = wrapError(err, "read setup")
 		return nil
+	}
+
+	if c.mode == ModeNetASCII {
+		c.reader = netascii.NewReader(c.reader)
 	}
 
 	// Set buf size
@@ -799,6 +801,15 @@ func (c *conn) parseOptions() (options, error) {
 				return nil, &errParsingOption{option: opt, value: val}
 			}
 			c.windowsize = uint16(size)
+			ackOpts[opt] = val
+		case optMode:
+			if val == string(ModeOctet) {
+				c.mode = ModeOctet
+			} else if val == string(ModeNetASCII) {
+				c.mode = ModeNetASCII
+			} else {
+				return nil, &errParsingOption{option: opt, value: val}
+			}
 			ackOpts[opt] = val
 		}
 	}

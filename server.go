@@ -332,16 +332,16 @@ func (s *Server) newConn(req *request, reqChan chan []byte) (*conn, func() error
 
 	if s.singlePort {
 		if s.tcpAddrStr != "" {
-			c = newSinglePortConn(req.addr, dg.mode(), s.conn, s.tcpConn, reqChan)
+			c = newSinglePortConn(req.addr, s.conn, s.tcpConn, reqChan)
 		} else {
-			c = newSinglePortConn(req.addr, dg.mode(), s.conn, nil, reqChan)
+			c = newSinglePortConn(req.addr, s.conn, nil, reqChan)
 		}
 	} else {
 		// Use empty mode until request has been parsed.
 		if s.tcpAddrStr != "" {
-			c, err = newConn(s.net, dg.mode(), req.addr, s.tcpConn)
+			c, err = newConn(s.net, req.addr, s.tcpConn)
 		} else {
-			c, err = newConn(s.net, dg.mode(), req.addr, nil)
+			c, err = newConn(s.net, req.addr, nil)
 		}
 		if err != nil {
 			s.log.err("Received error opening connection for new request: %v", err)

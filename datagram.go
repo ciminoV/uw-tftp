@@ -59,14 +59,15 @@ const (
 	ErrCodeNoSuchUser ErrorCode = 0x7
 
 	// ModeNetASCII is the string for netascii transfer mode
-	ModeNetASCII TransferMode = "na"
+	ModeNetASCII TransferMode = "NA"
 	// ModeOctet is the string for octet/binary transfer mode
-	ModeOctet TransferMode = "ot"
+	ModeOctet TransferMode = "OT"
 
-	optBlocksize    = "bs"
-	optTimeout      = "to"
-	optTransferSize = "ts"
-	optWindowSize   = "ws"
+	optBlocksize    = "B"
+	optTransferSize = "F"
+	optWindowSize   = "W"
+	optTimeout      = "T"
+	optMode         = "M"
 
 	sizeofOpcode  = 1 // Size of a opcode in bytes
 	sizeofErrcode = 2 // Size of an error code in bytes
@@ -111,7 +112,7 @@ func (d datagram) String() string {
 
 	switch o := d.opcode(); o {
 	case opCodeRRQ, opCodeWRQ:
-		return fmt.Sprintf("%s[Filename: %q; Mode: %q; Options: %s]", o, d.filename(), d.mode(), d.options())
+		return fmt.Sprintf("%s[Filename: %q; Options: %s]", o, d.filename(), d.options())
 	case opCodeDATA:
 		return fmt.Sprintf("%s[Block: %d; Data Length: %d]", o, d.block(), len(d.data()))
 	case opCodeOACK:
@@ -182,14 +183,6 @@ func (d *datagram) writeError(code ErrorCode, msg string) {
 	d.writeNull()
 }
 
-func (d *datagram) writeReadReq(filename string, mode TransferMode, options map[string]string) {
-	d.writeReq(opCodeRRQ, filename, mode, options)
-}
-
-func (d *datagram) writeWriteReq(filename string, mode TransferMode, options map[string]string) {
-	d.writeReq(opCodeWRQ, filename, mode, options)
-}
-
 func (d *datagram) writeOptionAck(options map[string]string) {
 	optLen := 0
 	for opt, val := range options {
@@ -204,18 +197,24 @@ func (d *datagram) writeOptionAck(options map[string]string) {
 	}
 }
 
+func (d *datagram) writeReadReq(filename string, mode TransferMode, options map[string]string) {
+	d.writeReq(opCodeRRQ, filename, mode, options)
+}
+
+func (d *datagram) writeWriteReq(filename string, mode TransferMode, options map[string]string) {
+	d.writeReq(opCodeWRQ, filename, mode, options)
+}
+
 // Combines duplicate logic from RRQ and WRQ
 func (d *datagram) writeReq(o opcode, filename string, mode TransferMode, options map[string]string) {
 	optLen := 0
 	for opt, val := range options {
 		optLen += len(opt) + 1 + len(val) + 1
 	}
-	d.reset(sizeofOpcode + len(filename) + 1 + len(mode) + 1 + optLen)
+	d.reset(sizeofOpcode + len(filename) + 1 + optLen)
 
 	d.writeUint8(uint8(o))
 	d.writeString(filename)
-	d.writeNull()
-	d.writeString(string(mode))
 	d.writeNull()
 
 	for opt, val := range options {
@@ -254,8 +253,12 @@ func (d *datagram) filename() string {
 
 // Mode from RRQ and WRQ datagrams
 func (d *datagram) mode() TransferMode {
-	fields := bytes.Split(d.buf[sizeofOpcode:], []byte{0x0})
-	return TransferMode(fields[1])
+	idx := bytes.IndexAny(d.bytes(), optMode)
+	if idx < 0 {
+		return TransferMode(defaultMode)
+	}
+	idx += 2 // skip the null byte
+	return TransferMode(d.bytes()[idx : idx+len(ModeOctet)])
 }
 
 // Opcode from all datagrams
@@ -280,7 +283,7 @@ func (d *datagram) options() options {
 
 	optSlice := bytes.Split(d.buf[sizeofOpcode:d.offset-1], []byte{0x0}) // d.buf[2:d.offset-1] = file -> just before final NULL
 	if op := d.opcode(); op == opCodeRRQ || op == opCodeWRQ {
-		optSlice = optSlice[2:] // Remove filename, mode
+		optSlice = optSlice[1:] // Remove filename
 	}
 
 	for i := 0; i < len(optSlice); i += 2 {
@@ -336,7 +339,7 @@ func (d *datagram) validate() error {
 			return errors.New("No filename provided")
 		case d.buf[d.offset-1] != 0x0: // End with NULL
 			return fmt.Errorf("Corrupt %v datagram", d.opcode())
-		case bytes.Count(d.buf[sizeofOpcode:d.offset], []byte{0x0})%2 != 0: // Number of NULL chars is not even
+		case bytes.Count(d.buf[sizeofOpcode:d.offset], []byte{0x0})%2 == 0: // Number of NULL chars is even
 			return fmt.Errorf("Corrupt %v datagram", d.opcode())
 		default:
 			switch d.mode() {

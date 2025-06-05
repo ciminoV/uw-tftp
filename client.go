@@ -18,8 +18,7 @@ type Client struct {
 	log  *logger
 	net  string // UDP network (ie, "udp", "udp4", "udp6")
 	port int
-	mode TransferMode      // TFTP transfer mode
-	opts map[string]string // Map of TFTP options (RFC2347)
+	opts map[string]string // Map of TFTP options
 
 	retransmit int // Per-packet retransmission limit
 
@@ -42,7 +41,6 @@ func NewClient(opts ...ClientOpt) (*Client, error) {
 		net:        defaultUDPNet,
 		port:       -1,
 		opts:       options,
-		mode:       defaultMode,
 		retransmit: defaultRetransmit,
 	}
 
@@ -79,9 +77,9 @@ func (c *Client) Get(url string) (*Response, error) {
 	// Create connection
 	var conn *conn
 	if c.tcpAddrStr == "" {
-		conn, err = newConnFromHost(c.net, c.mode, u.host, c.port, nil)
+		conn, err = newConnFromHost(c.net, u.host, c.port, nil)
 	} else {
-		conn, err = newConnFromHost(c.net, c.mode, u.host, c.port, c.tcpConn)
+		conn, err = newConnFromHost(c.net, u.host, c.port, c.tcpConn)
 	}
 	if err != nil {
 		return nil, err
@@ -110,9 +108,9 @@ func (c *Client) Put(url string, r io.Reader, size int64) (err error) {
 	// Create connection
 	var conn *conn
 	if c.tcpAddrStr != "" {
-		conn, err = newConnFromHost(c.net, c.mode, u.host, c.port, c.tcpConn)
+		conn, err = newConnFromHost(c.net, u.host, c.port, c.tcpConn)
 	} else {
-		conn, err = newConnFromHost(c.net, c.mode, u.host, c.port, nil)
+		conn, err = newConnFromHost(c.net, u.host, c.port, nil)
 	}
 	if err != nil {
 		return err
@@ -238,7 +236,7 @@ func ClientMode(mode TransferMode) ClientOpt {
 		if mode != ModeNetASCII && mode != ModeOctet {
 			return ErrInvalidMode
 		}
-		c.mode = mode
+		c.opts[optMode] = string(mode)
 		return nil
 	}
 }
@@ -311,6 +309,10 @@ func ClientRetransmit(i int) ClientOpt {
 	}
 }
 
+// ClientPort configures the udp port number for the client.
+// (useless feature should be removed)
+//
+// Default: -1
 func ClientPort(port int) ClientOpt {
 	return func(c *Client) error {
 		if port < 1024 {
