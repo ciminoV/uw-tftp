@@ -13,6 +13,8 @@ import (
 	"strings"
 )
 
+const maxFilenameLen = 45
+
 // Client makes requests to a server.
 type Client struct {
 	log  *logger
@@ -179,6 +181,11 @@ func parseURL(tftpURL string) (*parsedURL, error) {
 	p := &parsedURL{
 		host: u.Hostname(),
 		file: strings.TrimPrefix(file, "/"),
+	}
+
+	// Cut the filename if too long
+	if len(p.file) > maxFilenameLen {
+		p.file = p.file[:maxFilenameLen]
 	}
 
 	if p.host == "" {
