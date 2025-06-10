@@ -244,12 +244,13 @@ func ClientMode(mode TransferMode) ClientOpt {
 }
 
 // ClientBlocksize configures the number of data bytes that will be send in each datagram.
-// Valid range is 8 to 65464.
+// Valid range is 8 to 247.
+// The max value consider the 3B header plus a minum underwater header of 5B
 //
-// Default: 60.
+// Default: 56.
 func ClientBlocksize(size int) ClientOpt {
 	return func(c *Client) error {
-		if size < 8 || size > 65464 {
+		if size < 8 || size > 247 {
 			return ErrInvalidBlocksize
 		}
 		c.opts[optBlocksize] = strconv.Itoa(size)
@@ -276,7 +277,7 @@ func ClientTimeout(seconds int) ClientOpt {
 // Default: 1.
 func ClientWindowsize(window int) ClientOpt {
 	return func(c *Client) error {
-		if window < 1 || window > 65535 {
+		if window < 1 || window > 255 {
 			return ErrInvalidWindowsize
 		}
 		c.opts[optWindowSize] = strconv.Itoa(window)

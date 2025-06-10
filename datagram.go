@@ -9,6 +9,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -257,7 +258,7 @@ func (d *datagram) mode() TransferMode {
 	if idx < 0 {
 		return TransferMode(defaultMode)
 	}
-	idx += 2 // skip the null byte
+	idx += 1 // skip the key string
 	return TransferMode(d.bytes()[idx : idx+len(ModeOctet)])
 }
 
@@ -287,22 +288,14 @@ func (d *datagram) options() options {
 	}
 
 	// Each option key is one character
+	// TODO: use byte instead of string for keys
 	for i := 0; i < len(optSlice); i++ {
 		switch string(optSlice[i][0]) {
-		case optBlocksize:
-			options[string(optSlice[i][0])] = (strings.Trim(string(optSlice[i]), optBlocksize))
+		case optBlocksize, optWindowSize, optTimeout:
+			options[string(optSlice[i][0])] = fmt.Sprintf("%d", uint8(optSlice[i][1]))
 			break
-		case optTransferSize:
-			options[string(optSlice[i][0])] = (strings.Trim(string(optSlice[i]), optTransferSize))
-			break
-		case optWindowSize:
-			options[string(optSlice[i][0])] = (strings.Trim(string(optSlice[i]), optWindowSize))
-			break
-		case optTimeout:
-			options[string(optSlice[i][0])] = (strings.Trim(string(optSlice[i]), optTimeout))
-			break
-		case optMode:
-			options[string(optSlice[i][0])] = (strings.Trim(string(optSlice[i]), optMode))
+		case optTransferSize, optMode:
+			options[string(optSlice[i][0])] = string(optSlice[i][1:])
 			break
 		default:
 		}
@@ -337,8 +330,14 @@ func (d *datagram) writeUint8(i uint8) {
 
 func (d *datagram) writeOption(o string, v string) {
 	d.writeString(o)
-	d.writeNull()
-	d.writeString(v)
+	switch o {
+	case optBlocksize, optWindowSize, optTimeout:
+		size, _ := strconv.ParseUint(v, 10, 8)
+		d.writeUint8(uint8(size))
+		break
+	default:
+		d.writeString(v)
+	}
 	d.writeNull()
 }
 

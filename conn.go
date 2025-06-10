@@ -134,11 +134,12 @@ type conn struct {
 	isSender bool // Whether we're sending or receiving, gets set by writeSetup
 
 	// Negotiable options
-	blksize    uint16        // Size of DATA payloads
-	timeout    time.Duration // How long to wait before resending packets
-	windowsize uint16        // Number of DATA packets between ACKs
-	mode       TransferMode  // octet or netascii
-	tsize      *int64        // Size of the file being sent/received
+	blksize           uint8         // Size of DATA payloads
+	timeout           time.Duration // How long to wait before resending packets
+	timeoutMultiplier int
+	windowsize        uint16       // Number of DATA packets between ACKs
+	mode              TransferMode // octet or netascii
+	tsize             *int64       // Size of the file being sent/received
 
 	// Other, non-negotiable options
 	retransmit int // Number of times an individual datagram will be retransmitted on error
@@ -289,7 +290,7 @@ func (c *conn) handleRRQResponse() stateType {
 			return nil
 		}
 		c.block = c.rx.block()
-		if uint16(n) < c.blksize {
+		if uint8(n) < c.blksize {
 			c.done = true
 		}
 		return c.readSetup
@@ -433,7 +434,7 @@ func (c *conn) writeData() stateType {
 	c.window++
 
 	// If this is last block, move to get ack immediately
-	if uint16(n) < c.blksize {
+	if uint8(n) < c.blksize {
 		c.done = true
 		return c.getAck
 	}
@@ -775,11 +776,11 @@ func (c *conn) parseOptions() (options, error) {
 	for opt, val := range c.rx.options() {
 		switch opt {
 		case optBlocksize:
-			size, err := strconv.ParseUint(val, 10, 16)
+			size, err := strconv.ParseUint(val, 10, 8)
 			if err != nil {
 				return nil, &errParsingOption{option: opt, value: val}
 			}
-			c.blksize = uint16(size)
+			c.blksize = uint8(size)
 			ackOpts[opt] = val
 		case optTimeout:
 			seconds, err := strconv.ParseUint(val, 10, 8)
@@ -800,7 +801,7 @@ func (c *conn) parseOptions() (options, error) {
 			}
 			c.tsize = &tsize
 		case optWindowSize:
-			size, err := strconv.ParseUint(val, 10, 16)
+			size, err := strconv.ParseUint(val, 10, 8)
 			if err != nil {
 				return nil, &errParsingOption{option: opt, value: val}
 			}
