@@ -51,13 +51,14 @@ type request struct {
 // Any number of ServerOpts can be provided to configure optional values.
 func NewServer(addr string, opts ...ServerOpt) (*Server, error) {
 	s := &Server{
-		log:          newLogger("server"),
-		net:          defaultUDPNet,
-		addrStr:      addr,
-		retransmit:   defaultRetransmit,
-		dispatchChan: make(chan *request, 64),
-		reqDoneChan:  make(chan string, 64),
-		close:        make(chan struct{}),
+		log:               newLogger("server"),
+		net:               defaultUDPNet,
+		addrStr:           addr,
+		retransmit:        defaultRetransmit,
+		dispatchChan:      make(chan *request, 64),
+		reqDoneChan:       make(chan string, 64),
+		close:             make(chan struct{}),
+		timeoutMultiplier: defaultTimeOutMultiplier,
 	}
 
 	for _, opt := range opts {
