@@ -186,7 +186,7 @@ func (d *datagram) writeError(code ErrorCode, msg string) {
 func (d *datagram) writeOptionAck(options map[string]string) {
 	optLen := 0
 	for opt, val := range options {
-		optLen += len(opt) + 1 + len(val) + 1
+		optLen += len(opt) + len(val) + 1
 	}
 	d.reset(sizeofOpcode + optLen)
 
@@ -209,7 +209,7 @@ func (d *datagram) writeWriteReq(filename string, mode TransferMode, options map
 func (d *datagram) writeReq(o opcode, filename string, mode TransferMode, options map[string]string) {
 	optLen := 0
 	for opt, val := range options {
-		optLen += len(opt) + 1 + len(val) + 1
+		optLen += len(opt) + len(val) + 1
 	}
 	d.reset(sizeofOpcode + len(filename) + 1 + optLen)
 
@@ -286,8 +286,26 @@ func (d *datagram) options() options {
 		optSlice = optSlice[1:] // Remove filename
 	}
 
-	for i := 0; i < len(optSlice); i += 2 {
-		options[string(optSlice[i])] = string(optSlice[i+1])
+	// Each option key is one character
+	for i := 0; i < len(optSlice); i++ {
+		switch string(optSlice[i][0]) {
+		case optBlocksize:
+			options[string(optSlice[i][0])] = (strings.Trim(string(optSlice[i]), optBlocksize))
+			break
+		case optTransferSize:
+			options[string(optSlice[i][0])] = (strings.Trim(string(optSlice[i]), optTransferSize))
+			break
+		case optWindowSize:
+			options[string(optSlice[i][0])] = (strings.Trim(string(optSlice[i]), optWindowSize))
+			break
+		case optTimeout:
+			options[string(optSlice[i][0])] = (strings.Trim(string(optSlice[i]), optTimeout))
+			break
+		case optMode:
+			options[string(optSlice[i][0])] = (strings.Trim(string(optSlice[i]), optMode))
+			break
+		default:
+		}
 	}
 	return options
 }
@@ -339,8 +357,6 @@ func (d *datagram) validate() error {
 			return errors.New("No filename provided")
 		case d.buf[d.offset-1] != 0x0: // End with NULL
 			return fmt.Errorf("Corrupt %v datagram", d.opcode())
-		case bytes.Count(d.buf[sizeofOpcode:d.offset], []byte{0x0})%2 == 0: // Number of NULL chars is even
-			return fmt.Errorf("Corrupt %v datagram", d.opcode())
 		default:
 			switch d.mode() {
 			case ModeNetASCII, ModeOctet:
@@ -365,8 +381,6 @@ func (d *datagram) validate() error {
 	case opCodeOACK:
 		switch {
 		case d.buf[d.offset-1] != 0x0:
-			return errors.New("Corrupt OACK datagram")
-		case bytes.Count(d.buf[sizeofOpcode:d.offset], []byte{0x0})%2 != 0: // Number of NULL chars is not even
 			return errors.New("Corrupt OACK datagram")
 		}
 	}
