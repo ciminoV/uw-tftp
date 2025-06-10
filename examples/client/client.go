@@ -14,12 +14,13 @@ func main() {
 
 	// Configuring with a slice of options
 	opts := []tftp.ClientOpt{
-		tftp.ClientBlocksize(55),  // default 60
+		tftp.ClientBlocksize(56),  // default 60
 		tftp.ClientWindowsize(13), // default 1
 		tftp.ClientTimeout(45),    // default 60
 		// tftp.ClientMode("NA"),     // default Octet
 		// tftp.ClientTransferSize(true),
-		// tftp.ClientRetransmit(3),// default 10
+		// tftp.ClientRetransmit(3), // default 10
+		// tftp.ClientTimeoutMultiplier(2),
 	}
 
 	filename := os.Args[1]

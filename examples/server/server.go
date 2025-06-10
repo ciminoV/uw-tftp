@@ -3,7 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"log"
 	"os"
 
@@ -16,6 +16,7 @@ func main() {
 
 	opts := []tftp.ServerOpt{
 		// tftp.ServerRetransmit(5),
+		// tftp.ServerTimeoutMultiplier(2),
 		tftp.ServerSinglePort(true),
 	}
 
@@ -54,7 +55,7 @@ func writeTFTP(w tftp.WriteRequest) {
 
 	if _, err := os.Stat("./" + w.Name()); errors.Is(err, os.ErrNotExist) {
 		// Read the data from the client into memory
-		data, err := ioutil.ReadAll(w)
+		data, err := io.ReadAll(w)
 		if err != nil {
 			log.Fatalln(err)
 			return

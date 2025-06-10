@@ -20,7 +20,8 @@ type Client struct {
 	port int
 	opts map[string]string // Map of TFTP options
 
-	retransmit int // Per-packet retransmission limit
+	retransmit        int // Per-packet retransmission limit
+	timeoutMultiplier int // Multiplier for the timeout entry
 
 	tcpAddrStr string       // TCP address string
 	tcpConn    *net.TCPConn // TCP connection socket
@@ -37,11 +38,12 @@ func NewClient(opts ...ClientOpt) (*Client, error) {
 	}
 
 	c := &Client{
-		log:        newLogger("client"),
-		net:        defaultUDPNet,
-		port:       -1,
-		opts:       options,
-		retransmit: defaultRetransmit,
+		log:               newLogger("client"),
+		net:               defaultUDPNet,
+		port:              -1,
+		opts:              options,
+		retransmit:        defaultRetransmit,
+		timeoutMultiplier: defaultTimeOutMultiplier,
 	}
 
 	// Apply option functions to client
@@ -77,9 +79,9 @@ func (c *Client) Get(url string) (*Response, error) {
 	// Create connection
 	var conn *conn
 	if c.tcpAddrStr == "" {
-		conn, err = newConnFromHost(c.net, u.host, c.port, nil)
+		conn, err = newConnFromHost(c.net, u.host, c.port, nil, c.timeoutMultiplier)
 	} else {
-		conn, err = newConnFromHost(c.net, u.host, c.port, c.tcpConn)
+		conn, err = newConnFromHost(c.net, u.host, c.port, c.tcpConn, c.timeoutMultiplier)
 	}
 	if err != nil {
 		return nil, err
@@ -108,9 +110,9 @@ func (c *Client) Put(url string, r io.Reader, size int64) (err error) {
 	// Create connection
 	var conn *conn
 	if c.tcpAddrStr != "" {
-		conn, err = newConnFromHost(c.net, u.host, c.port, c.tcpConn)
+		conn, err = newConnFromHost(c.net, u.host, c.port, c.tcpConn, c.timeoutMultiplier)
 	} else {
-		conn, err = newConnFromHost(c.net, u.host, c.port, nil)
+		conn, err = newConnFromHost(c.net, u.host, c.port, nil, c.timeoutMultiplier)
 	}
 	if err != nil {
 		return err
@@ -258,7 +260,7 @@ func ClientBlocksize(size int) ClientOpt {
 // ClientTimeout configures the number of seconds to wait before resending an unacknowledged datagram.
 // Valid range is 1 to 255.
 //
-// Default: 20.
+// Default: 60.
 func ClientTimeout(seconds int) ClientOpt {
 	return func(c *Client) error {
 		if seconds < 1 || seconds > 255 {
@@ -330,6 +332,16 @@ func ClientPort(port int) ClientOpt {
 func ClientTcpForward(tcpAddr string) ClientOpt {
 	return func(c *Client) error {
 		c.tcpAddrStr = tcpAddr
+		return nil
+	}
+}
+
+func ClientTimeoutMultiplier(m int) ClientOpt {
+	return func(c *Client) error {
+		if m < 0 {
+			return ErrInvalidTimeOutMultiplier
+		}
+		c.timeoutMultiplier = m
 		return nil
 	}
 }

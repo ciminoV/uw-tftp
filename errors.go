@@ -41,6 +41,8 @@ var (
 	ErrInvalidRetransmit = errors.New("invalid retransmit: cannot be negative")
 	// ErrMaxRetries indicates that the maximum number of retries has been reached.
 	ErrMaxRetries = errors.New("max retries reached")
+	// ErrInvalidTimeOutMultiplier indicates the number to multiply the timeout by
+	ErrInvalidTimeOutMultiplier = errors.New("invalid timeout multiplier: cannot be negative")
 )
 
 type errUnexpectedDatagram struct {
