@@ -13,15 +13,17 @@ import (
 	"strings"
 )
 
+const maxFilenameLen = 45
+
 // Client makes requests to a server.
 type Client struct {
 	log  *logger
 	net  string // UDP network (ie, "udp", "udp4", "udp6")
 	port int
-	mode TransferMode      // TFTP transfer mode
-	opts map[string]string // Map of TFTP options (RFC2347)
+	opts map[string]string // Map of TFTP options
 
-	retransmit int // Per-packet retransmission limit
+	retransmit        int // Per-packet retransmission limit
+	timeoutMultiplier int // Multiplier for the timeout entry
 
 	tcpAddrStr string       // TCP address string
 	tcpConn    *net.TCPConn // TCP connection socket
@@ -38,12 +40,12 @@ func NewClient(opts ...ClientOpt) (*Client, error) {
 	}
 
 	c := &Client{
-		log:        newLogger("client"),
-		net:        defaultUDPNet,
-		port:       -1,
-		opts:       options,
-		mode:       defaultMode,
-		retransmit: defaultRetransmit,
+		log:               newLogger("client"),
+		net:               defaultUDPNet,
+		port:              -1,
+		opts:              options,
+		retransmit:        defaultRetransmit,
+		timeoutMultiplier: defaultTimeOutMultiplier,
 	}
 
 	// Apply option functions to client
@@ -79,9 +81,9 @@ func (c *Client) Get(url string) (*Response, error) {
 	// Create connection
 	var conn *conn
 	if c.tcpAddrStr == "" {
-		conn, err = newConnFromHost(c.net, c.mode, u.host, c.port, nil)
+		conn, err = newConnFromHost(c.net, u.host, c.port, nil, c.timeoutMultiplier)
 	} else {
-		conn, err = newConnFromHost(c.net, c.mode, u.host, c.port, c.tcpConn)
+		conn, err = newConnFromHost(c.net, u.host, c.port, c.tcpConn, c.timeoutMultiplier)
 	}
 	if err != nil {
 		return nil, err
@@ -110,10 +112,9 @@ func (c *Client) Put(url string, r io.Reader, size int64) (err error) {
 	// Create connection
 	var conn *conn
 	if c.tcpAddrStr != "" {
-		conn, err = newConnFromHost(c.net, c.mode, u.host, c.port, c.tcpConn)
+		conn, err = newConnFromHost(c.net, u.host, c.port, c.tcpConn, c.timeoutMultiplier)
 	} else {
-		c.log.debug("tcp %v", c.tcpAddrStr)
-		conn, err = newConnFromHost(c.net, c.mode, u.host, c.port, nil)
+		conn, err = newConnFromHost(c.net, u.host, c.port, nil, c.timeoutMultiplier)
 	}
 	if err != nil {
 		return err
@@ -182,6 +183,11 @@ func parseURL(tftpURL string) (*parsedURL, error) {
 		file: strings.TrimPrefix(file, "/"),
 	}
 
+	// Cut the filename if too long
+	if len(p.file) > maxFilenameLen {
+		p.file = p.file[:maxFilenameLen]
+	}
+
 	if p.host == "" {
 		return nil, ErrInvalidHostIP
 	}
@@ -239,18 +245,19 @@ func ClientMode(mode TransferMode) ClientOpt {
 		if mode != ModeNetASCII && mode != ModeOctet {
 			return ErrInvalidMode
 		}
-		c.mode = mode
+		c.opts[optMode] = string(mode)
 		return nil
 	}
 }
 
 // ClientBlocksize configures the number of data bytes that will be send in each datagram.
-// Valid range is 8 to 65464.
+// Valid range is 8 to 247.
+// The max value consider the 3B header plus a minum underwater header of 5B
 //
-// Default: 60.
+// Default: 56.
 func ClientBlocksize(size int) ClientOpt {
 	return func(c *Client) error {
-		if size < 8 || size > 65464 {
+		if size < 8 || size > 247 {
 			return ErrInvalidBlocksize
 		}
 		c.opts[optBlocksize] = strconv.Itoa(size)
@@ -261,7 +268,7 @@ func ClientBlocksize(size int) ClientOpt {
 // ClientTimeout configures the number of seconds to wait before resending an unacknowledged datagram.
 // Valid range is 1 to 255.
 //
-// Default: 20.
+// Default: 60.
 func ClientTimeout(seconds int) ClientOpt {
 	return func(c *Client) error {
 		if seconds < 1 || seconds > 255 {
@@ -277,7 +284,7 @@ func ClientTimeout(seconds int) ClientOpt {
 // Default: 1.
 func ClientWindowsize(window int) ClientOpt {
 	return func(c *Client) error {
-		if window < 1 || window > 65535 {
+		if window < 1 || window > 255 {
 			return ErrInvalidWindowsize
 		}
 		c.opts[optWindowSize] = strconv.Itoa(window)
@@ -312,6 +319,10 @@ func ClientRetransmit(i int) ClientOpt {
 	}
 }
 
+// ClientPort configures the udp port number for the client.
+// (useless feature should be removed)
+//
+// Default: -1
 func ClientPort(port int) ClientOpt {
 	return func(c *Client) error {
 		if port < 1024 {
@@ -329,6 +340,16 @@ func ClientPort(port int) ClientOpt {
 func ClientTcpForward(tcpAddr string) ClientOpt {
 	return func(c *Client) error {
 		c.tcpAddrStr = tcpAddr
+		return nil
+	}
+}
+
+func ClientTimeoutMultiplier(m int) ClientOpt {
+	return func(c *Client) error {
+		if m < 0 {
+			return ErrInvalidTimeOutMultiplier
+		}
+		c.timeoutMultiplier = m
 		return nil
 	}
 }

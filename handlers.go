@@ -81,6 +81,7 @@ func (w *writeRequest) Size() (int64, error) {
 
 func (w *writeRequest) WriteError(c ErrorCode, s string) {
 	w.conn.sendError(c, s)
+	w.conn.done = true
 }
 
 func (w *writeRequest) TransferMode() TransferMode {

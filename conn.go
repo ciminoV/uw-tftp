@@ -16,21 +16,23 @@ import (
 )
 
 const (
-	defaultPort       = "69"
-	defaultMode       = ModeOctet
-	defaultUDPNet     = "udp"
-	defaultTCPNet     = "tcp"
-	defaultTimeout    = time.Second * 60
-	defaultBlksize    = 55
-	defaultHdrsize    = 4
-	defaultPktsize    = defaultHdrsize + defaultBlksize
-	defaultWindowsize = 1
-	defaultRetransmit = 5
+	defaultPort              = "69"
+	defaultMode              = ModeOctet
+	defaultUDPNet            = "udp"
+	defaultTCPNet            = "tcp"
+	defaultTimeout           = time.Second * 60
+	defaultBlksize           = 56
+	defaultHdrsize           = sizeofHdr
+	defaultPktsize           = defaultHdrsize + defaultBlksize
+	defaultWindowsize        = 1
+	defaultRetransmit        = 10
+	defaultTimeOutMultiplier = 1
 )
 
 // All connections will use these options unless overridden.
 var defaultOptions = map[string]string{
-	optTransferSize: "0", // Enable tsize
+	// optTransferSize: "0", // Enable tsize
+	// optMode: string(defaultMode),
 }
 
 // newConn starts listening on a system assigned port and returns an initialized conn
@@ -38,7 +40,7 @@ var defaultOptions = map[string]string{
 // udpNet is one of "udp", "udp4", or "udp6"
 // addr is the address of the target server
 // tcpConn is the TCP socket of an external application, if specified
-func newConn(udpNet string, mode TransferMode, addr *net.UDPAddr, tcpConn *net.TCPConn) (*conn, error) {
+func newConn(udpNet string, addr *net.UDPAddr, tcpConn *net.TCPConn, toMulti int) (*conn, error) {
 	// Start listening, an empty UDPAddr will cause the system to assign a port
 	netConn, err := net.ListenUDP(udpNet, &net.UDPAddr{})
 	if err != nil {
@@ -46,41 +48,43 @@ func newConn(udpNet string, mode TransferMode, addr *net.UDPAddr, tcpConn *net.T
 	}
 
 	c := &conn{
-		log:        newLogger(addr.String()),
-		remoteAddr: addr,
-		netConn:    netConn,
-		blksize:    defaultBlksize,
-		timeout:    defaultTimeout,
-		windowsize: defaultWindowsize,
-		retransmit: defaultRetransmit,
-		mode:       mode,
-		tcpConn:    tcpConn,
+		log:               newLogger(addr.String()),
+		remoteAddr:        addr,
+		netConn:           netConn,
+		blksize:           defaultBlksize,
+		timeout:           defaultTimeout,
+		windowsize:        defaultWindowsize,
+		retransmit:        defaultRetransmit,
+		mode:              defaultMode,
+		tcpConn:           tcpConn,
+		timeoutMultiplier: toMulti,
 	}
 	c.rx.buf = make([]byte, defaultPktsize)
 
 	return c, nil
 }
 
-func newSinglePortConn(addr *net.UDPAddr, mode TransferMode, netConn *net.UDPConn, tcpConn *net.TCPConn, reqChan chan []byte) *conn {
+func newSinglePortConn(addr *net.UDPAddr, netConn *net.UDPConn, tcpConn *net.TCPConn, reqChan chan []byte, toMulti int) *conn {
 	return &conn{
-		log:        newLogger(addr.String()),
-		remoteAddr: addr,
-		blksize:    defaultBlksize,
-		timeout:    defaultTimeout,
-		windowsize: defaultWindowsize,
-		retransmit: defaultRetransmit,
-		mode:       mode,
-		buf:        make([]byte, defaultPktsize),
-		reqChan:    reqChan,
-		netConn:    netConn,
-		tcpConn:    tcpConn,
+		log:               newLogger(addr.String()),
+		remoteAddr:        addr,
+		blksize:           defaultBlksize,
+		timeout:           defaultTimeout,
+		windowsize:        defaultWindowsize,
+		retransmit:        defaultRetransmit,
+		mode:              defaultMode,
+		buf:               make([]byte, defaultPktsize),
+		reqChan:           reqChan,
+		netConn:           netConn,
+		tcpConn:           tcpConn,
+		timeoutMultiplier: toMulti,
 	}
 }
 
 // newConnFromHost wraps newConn and looks up the target's address from a string
 //
 // This function is used by Client
-func newConnFromHost(udpNet string, mode TransferMode, host string, port int, tcpConn *net.TCPConn) (*conn, error) {
+func newConnFromHost(udpNet string, host string, port int, tcpConn *net.TCPConn, toMulti int) (*conn, error) {
 	// Resolve server
 	addr, err := net.ResolveUDPAddr(udpNet, host)
 	if err != nil {
@@ -95,22 +99,23 @@ func newConnFromHost(udpNet string, mode TransferMode, host string, port int, tc
 		}
 
 		c := &conn{
-			log:        newLogger(addr.String()),
-			remoteAddr: addr,
-			netConn:    netConn,
-			blksize:    defaultBlksize,
-			timeout:    defaultTimeout,
-			windowsize: defaultWindowsize,
-			retransmit: defaultRetransmit,
-			mode:       mode,
-			tcpConn:    tcpConn,
+			log:               newLogger(addr.String()),
+			remoteAddr:        addr,
+			netConn:           netConn,
+			blksize:           defaultBlksize,
+			timeout:           defaultTimeout,
+			windowsize:        defaultWindowsize,
+			retransmit:        defaultRetransmit,
+			mode:              defaultMode,
+			tcpConn:           tcpConn,
+			timeoutMultiplier: toMulti,
 		}
 		c.rx.buf = make([]byte, defaultPktsize)
 
 		return c, nil
 	}
 
-	return newConn(udpNet, mode, addr, tcpConn)
+	return newConn(udpNet, addr, tcpConn, toMulti)
 }
 
 // conn handles TFTP read and write requests
@@ -129,11 +134,12 @@ type conn struct {
 	isSender bool // Whether we're sending or receiving, gets set by writeSetup
 
 	// Negotiable options
-	blksize    uint16        // Size of DATA payloads
-	timeout    time.Duration // How long to wait before resending packets
-	windowsize uint16        // Number of DATA packets between ACKs
-	mode       TransferMode  // octet or netascii
-	tsize      *int64        // Size of the file being sent/received
+	blksize           uint8         // Size of DATA payloads
+	timeout           time.Duration // How long to wait before resending packets
+	timeoutMultiplier int
+	windowsize        uint16       // Number of DATA packets between ACKs
+	mode              TransferMode // octet or netascii
+	tsize             *int64       // Size of the file being sent/received
 
 	// Other, non-negotiable options
 	retransmit int // Number of times an individual datagram will be retransmitted on error
@@ -151,7 +157,7 @@ type conn struct {
 	triesAck      int               // retry ack counter
 	err           error             // error has occurreds
 	closing       bool              // connection is closing
-	done          bool              // the transfer is complete
+	done          bool              // the transfer is complete (or error occurred)
 
 	// Buffers
 	buf   []byte       // incoming data from, sized to blksize + headers
@@ -170,6 +176,7 @@ type conn struct {
 // sendWriteRequest sends WRQ to server and negotiates transfer options
 func (c *conn) sendWriteRequest(filename string, opts map[string]string) error {
 	c.isSender = true
+
 	// Build WRQ
 	c.tx.writeWriteReq(filename, c.mode, opts)
 
@@ -283,7 +290,7 @@ func (c *conn) handleRRQResponse() stateType {
 			return nil
 		}
 		c.block = c.rx.block()
-		if uint16(n) < c.blksize {
+		if uint8(n) < c.blksize {
 			c.done = true
 		}
 		return c.readSetup
@@ -427,7 +434,7 @@ func (c *conn) writeData() stateType {
 	c.window++
 
 	// If this is last block, move to get ack immediately
-	if uint16(n) < c.blksize {
+	if uint8(n) < c.blksize {
 		c.done = true
 		return c.getAck
 	}
@@ -471,14 +478,15 @@ func (c *conn) startRead() stateType {
 // first read.
 func (c *conn) readSetup() stateType {
 	c.reader = &c.rxBuf
-	if c.mode == ModeNetASCII {
-		c.reader = netascii.NewReader(c.reader)
-	}
 
 	ackOpts, err := c.parseOptions()
 	if err != nil {
 		c.err = wrapError(err, "read setup")
 		return nil
+	}
+
+	if c.mode == ModeNetASCII {
+		c.reader = netascii.NewReader(c.reader)
 	}
 
 	// Set buf size
@@ -768,18 +776,18 @@ func (c *conn) parseOptions() (options, error) {
 	for opt, val := range c.rx.options() {
 		switch opt {
 		case optBlocksize:
-			size, err := strconv.ParseUint(val, 10, 16)
+			size, err := strconv.ParseUint(val, 10, 8)
 			if err != nil {
 				return nil, &errParsingOption{option: opt, value: val}
 			}
-			c.blksize = uint16(size)
+			c.blksize = uint8(size)
 			ackOpts[opt] = val
 		case optTimeout:
 			seconds, err := strconv.ParseUint(val, 10, 8)
 			if err != nil {
 				return nil, &errParsingOption{option: opt, value: val}
 			}
-			c.timeout = time.Second * time.Duration(seconds)
+			c.timeout = time.Duration(c.timeoutMultiplier) * time.Second * time.Duration(seconds)
 			ackOpts[opt] = val
 		case optTransferSize:
 			tsize, err := strconv.ParseInt(val, 10, 64)
@@ -793,11 +801,20 @@ func (c *conn) parseOptions() (options, error) {
 			}
 			c.tsize = &tsize
 		case optWindowSize:
-			size, err := strconv.ParseUint(val, 10, 16)
+			size, err := strconv.ParseUint(val, 10, 8)
 			if err != nil {
 				return nil, &errParsingOption{option: opt, value: val}
 			}
 			c.windowsize = uint16(size)
+			ackOpts[opt] = val
+		case optMode:
+			if val == string(ModeOctet) {
+				c.mode = ModeOctet
+			} else if val == string(ModeNetASCII) {
+				c.mode = ModeNetASCII
+			} else {
+				return nil, &errParsingOption{option: opt, value: val}
+			}
 			ackOpts[opt] = val
 		}
 	}
@@ -919,7 +936,7 @@ func (c *conn) getAck() stateType {
 
 	c.tries = 0
 
-	if c.tx.opcode() == opCodeOACK { // TODO: Avoid checking tx opcode?
+	if c.tx.opcode() == opCodeOACK {
 		return c.write
 	}
 	return c.writeData

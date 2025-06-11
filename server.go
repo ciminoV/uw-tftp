@@ -31,7 +31,8 @@ type Server struct {
 	dispatchChan chan *request
 	reqDoneChan  chan string
 
-	retransmit int // Per-packet retransmission limit
+	retransmit        int // Per-packet retransmission limit
+	timeoutMultiplier int // Multiplier for the timeout entry
 
 	rh ReadHandler
 	wh WriteHandler
@@ -50,13 +51,14 @@ type request struct {
 // Any number of ServerOpts can be provided to configure optional values.
 func NewServer(addr string, opts ...ServerOpt) (*Server, error) {
 	s := &Server{
-		log:          newLogger("server"),
-		net:          defaultUDPNet,
-		addrStr:      addr,
-		retransmit:   defaultRetransmit,
-		dispatchChan: make(chan *request, 64),
-		reqDoneChan:  make(chan string, 64),
-		close:        make(chan struct{}),
+		log:               newLogger("server"),
+		net:               defaultUDPNet,
+		addrStr:           addr,
+		retransmit:        defaultRetransmit,
+		dispatchChan:      make(chan *request, 64),
+		reqDoneChan:       make(chan string, 64),
+		close:             make(chan struct{}),
+		timeoutMultiplier: defaultTimeOutMultiplier,
 	}
 
 	for _, opt := range opts {
@@ -161,7 +163,7 @@ func (s *Server) Serve(conn *net.UDPConn) error {
 			}
 
 			// Fragmented WRQ/RRQ
-			if n > 0 && (buf[1] == byte(opCodeRRQ) || buf[1] == byte(opCodeWRQ)) {
+			if n > 0 && (buf[0] == byte(opCodeRRQ) || buf[0] == byte(opCodeWRQ)) {
 				if buf[offset+n-1] != 0x0 {
 					offset += n
 					s.log.trace("Incomplete request from %v: %d bytes received", addr, offset)
@@ -180,8 +182,8 @@ func (s *Server) Serve(conn *net.UDPConn) error {
 				return wrapError(err, "reading from conn")
 			}
 
-			if n < 2 {
-				continue // Must be at least 2 bytes to read opcode
+			if n < sizeofOpcode {
+				continue // Must be at least 1 byte to read opcode
 			}
 
 			// Make a copy of the received data
@@ -202,7 +204,7 @@ func (s *Server) connManager() {
 	for {
 		select {
 		case req := <-s.dispatchChan:
-			switch req.pkt[1] {
+			switch req.pkt[0] {
 			case byte(opCodeRRQ): // RRQ
 				if s.singlePort {
 					reqChan = make(chan []byte, 64)
@@ -308,12 +310,13 @@ func (s *Server) dispatchWriteRequest(req *request, reqChan chan []byte) {
 
 	// Create request
 	w := &writeRequest{conn: c, name: c.rx.filename()}
-
-	// parse options to get size
-	c.log.trace("performing write setup")
-	c.readSetup()
-
 	s.wh.ReceiveTFTP(w)
+
+	// No error occurred
+	if !c.done {
+		c.log.trace("Performing write setup")
+		c.readSetup()
+	}
 }
 
 func (s *Server) newConn(req *request, reqChan chan []byte) (*conn, func() error, error) {
@@ -331,16 +334,16 @@ func (s *Server) newConn(req *request, reqChan chan []byte) (*conn, func() error
 
 	if s.singlePort {
 		if s.tcpAddrStr != "" {
-			c = newSinglePortConn(req.addr, dg.mode(), s.conn, s.tcpConn, reqChan)
+			c = newSinglePortConn(req.addr, s.conn, s.tcpConn, reqChan, s.timeoutMultiplier)
 		} else {
-			c = newSinglePortConn(req.addr, dg.mode(), s.conn, nil, reqChan)
+			c = newSinglePortConn(req.addr, s.conn, nil, reqChan, s.timeoutMultiplier)
 		}
 	} else {
 		// Use empty mode until request has been parsed.
 		if s.tcpAddrStr != "" {
-			c, err = newConn(s.net, dg.mode(), req.addr, s.tcpConn)
+			c, err = newConn(s.net, req.addr, s.tcpConn, s.timeoutMultiplier)
 		} else {
-			c, err = newConn(s.net, dg.mode(), req.addr, nil)
+			c, err = newConn(s.net, req.addr, nil, s.timeoutMultiplier)
 		}
 		if err != nil {
 			s.log.err("Received error opening connection for new request: %v", err)
@@ -413,6 +416,16 @@ func ServerSinglePort(enable bool) ServerOpt {
 func ServerTcpForward(tcpAddr string) ServerOpt {
 	return func(s *Server) error {
 		s.tcpAddrStr = tcpAddr
+		return nil
+	}
+}
+
+func ServerTimeoutMultiplier(m int) ServerOpt {
+	return func(s *Server) error {
+		if m < 0 {
+			return ErrInvalidTimeOutMultiplier
+		}
+		s.timeoutMultiplier = m
 		return nil
 	}
 }
