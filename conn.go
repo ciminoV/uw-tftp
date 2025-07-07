@@ -151,7 +151,7 @@ type conn struct {
 	unackBlock    uint16            // Last block # received and not yet acked
 	unackWin      map[uint16][]byte // Window of blocks not yet acked (#block > current block #)
 	catchup       bool              // Ignore incoming blocks from a window we reset
-	p             []byte            // bytes to be read/written (depending on send/receive)
+	p             []byte            // bytes to be read/written from/to file (depending on send/receive)
 	n             int               // byte count read/written
 	tries         int               // retry counter
 	triesAck      int               // retry ack counter
@@ -1055,7 +1055,7 @@ func (c *conn) writeToNet(fragment bool) error {
 	return err
 }
 
-// ringBuffer wraps a bytes.Buffer, adding the ability to unread data
+// ringBuffer embeds a bytes.Buffer, adding the ability to unread data
 // up to the number of slots.
 type ringBuffer struct {
 	bytes.Buffer
@@ -1099,6 +1099,7 @@ func (r *ringBuffer) Read(p []byte) (int, error) {
 	}
 
 	// Read from Buffer and copy read data into current slot
+	// (len(p) == c.blksize)
 	n, err := r.Buffer.Read(p)
 	n = copy(r.buf[offset:offset+n], p[:n])
 	r.slotsLen[slot] = n

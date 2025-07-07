@@ -290,6 +290,9 @@ func (d *datagram) options() options {
 	// Each option key is one character
 	// TODO: use byte instead of string for keys
 	for i := 0; i < len(optSlice); i++ {
+		if len(optSlice[i]) == 0 {
+			continue
+		}
 		switch string(optSlice[i][0]) {
 		case optBlocksize, optWindowSize, optTimeout:
 			options[string(optSlice[i][0])] = fmt.Sprintf("%d", uint8(optSlice[i][1]))
