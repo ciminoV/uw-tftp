@@ -118,6 +118,11 @@ func newConnFromHost(udpNet string, host string, port int, tcpConn *net.TCPConn,
 	return newConn(udpNet, addr, tcpConn, toMulti)
 }
 
+type dataBlock struct {
+	block   uint16
+	payload []byte
+}
+
 // conn handles TFTP read and write requests
 type conn struct {
 	log        *logger
@@ -126,49 +131,60 @@ type conn struct {
 	remoteAddr net.Addr     // Address of the remote server or client
 
 	// Single Port Mode
+
 	reqChan chan []byte
 	timer   *time.Timer
 
 	// Transfer type
+
 	isClient bool // Whether or not we're the client, gets set by sendRequest
 	isSender bool // Whether we're sending or receiving, gets set by writeSetup
 
 	// Negotiable options
+
 	blksize           uint8         // Size of DATA payloads
 	timeout           time.Duration // How long to wait before resending packets
 	timeoutMultiplier int
-	windowsize        uint16       // Number of DATA packets between ACKs
+	windowsize        uint8        // Number of DATA packets between ACKs
 	mode              TransferMode // octet or netascii
 	tsize             *int64       // Size of the file being sent/received
 
-	// Other, non-negotiable options
 	retransmit int // Number of times an individual datagram will be retransmitted on error
 
 	// Track state of transfer
-	optionsParsed bool              // Whether TFTP options have been parsed yet
-	window        uint16            // Packets sent since last ACK
-	block         uint16            // Current block #
-	unackBlock    uint16            // Last block # received and not yet acked
-	unackWin      map[uint16][]byte // Window of blocks not yet acked (#block > current block #)
-	catchup       bool              // Ignore incoming blocks from a window we reset
-	p             []byte            // bytes to be read/written from/to file (depending on send/receive)
-	n             int               // byte count read/written
-	tries         int               // retry counter
-	triesAck      int               // retry ack counter
-	err           error             // error has occurreds
-	closing       bool              // connection is closing
-	done          bool              // the transfer is complete (or error occurred)
+
+	optionsParsed bool   // Whether TFTP options have been parsed yet
+	window        uint8  // Packets sent since last ACK
+	block         uint16 // Current block #
+	// unackBlock    uint16            // Last block # received and not yet acked
+	// unackWin      map[uint16][]byte // Window of blocks not yet acked (#block > current block #)
+	// catchup     bool   // Ignore incoming blocks from a window we reset
+	p           []byte // bytes to be read/written from/to file (depending on send/receive)
+	n           int    // byte count read/written
+	tries       int    // retry counter
+	triesAck    int    // retry ack counter
+	ackTimeout  bool
+	unackBlocks int
+	err         error // error has occurreds
+	closing     bool  // connection is closing
+	done        bool  // the transfer is complete (or error occurred)
 
 	// Buffers
+
 	buf   []byte       // incoming data from, sized to blksize + headers
 	txBuf *ringBuffer  // buffers outgoing data, retaining windowsize * blksize
 	rxBuf bytes.Buffer // buffer incoming data
 
+	txWin    []dataBlock
+	unackWin []dataBlock
+
 	// Datgrams
+
 	tx datagram // Constructs outgoing datagrams
 	rx datagram // Hold and parse current incoming datagram
 
 	// reader/writer are rxBuf/txBuf, possibly wrapped by netascii reader/writer
+
 	reader io.Reader
 	writer io.Writer
 }
@@ -356,6 +372,10 @@ func (c *conn) writeSetup() stateType {
 		c.writer = netascii.NewWriter(c.writer)
 	}
 
+	// Init sender windows
+	c.txWin = make([]dataBlock, c.windowsize)
+	c.unackWin = make([]dataBlock, c.windowsize)
+
 	// Client setup is done, ready to send data
 	if c.isClient {
 		return nil
@@ -412,18 +432,62 @@ func (c *conn) writeData() stateType {
 		return nil
 	}
 
-	c.block++
+	var n int
+	var err error
 
-	// Read data from txBuf
-	n, err := c.txBuf.Read(c.buf)
-	if err != nil && err != io.EOF {
-		c.err = wrapError(err, "reading data from txBuf before writing to network")
-		return nil
+	if c.ackTimeout {
+		// Last ACK not received, retransmit last window
+		block := c.txWin[c.window].block
+		payload := c.txWin[c.window].payload
+
+		c.tx.writeData(block, c.window, payload)
+
+		// If this is last block, move to get ack immediately
+		if uint8(len(payload)) < c.blksize {
+			c.window++
+			c.done = true
+			return c.getAck
+		}
+
+	} else {
+		// ACK received, transmit new window
+		if c.unackBlocks > 0 {
+			// Retransmit not acked block
+			unack_block := c.unackWin[c.window].block
+
+			n, err = c.txBuf.Read(c.buf, int(c.window))
+			if err != nil && err != io.EOF {
+				c.err = wrapError(err, "reading data from txBuf before writing to network")
+				return nil
+			}
+			c.tx.writeData(unack_block, c.window, c.buf[:n])
+
+			// Copy last transmitted block to tx window
+			c.txWin[c.window].block = unack_block
+			n = copy(c.txWin[c.window].payload, c.buf[:n])
+
+			// Decrement unacked blocks counter
+			c.unackBlocks--
+
+		} else {
+			// Transmit new block
+			c.block++
+
+			n, err = c.txBuf.Read(c.buf, int(c.window))
+			if err != nil && err != io.EOF {
+				c.err = wrapError(err, "reading data from txBuf before writing to network")
+				return nil
+			}
+			c.tx.writeData(c.block, c.window, c.buf[:n])
+
+			// Copy last transmitted block to tx window
+			c.txWin[c.window].block = c.block
+			n = copy(c.txWin[c.window].payload, c.buf[:n])
+		}
 	}
-	c.tx.writeData(c.block, c.buf[:n])
 
-	// Send w.tx datagram
-	c.log.trace("Sending block %d with %d bytes to %s\n", c.block, n, c.remoteAddr)
+	// Send tx datagram
+	c.log.trace("Sending block %d with block number %d and %d bytes to %s\n", c.window, c.block, n, c.remoteAddr)
 	err = c.writeToNet(false)
 	if err != nil {
 		c.err = wrapError(err, "writing data to network")
@@ -434,7 +498,7 @@ func (c *conn) writeData() stateType {
 	c.window++
 
 	// If this is last block, move to get ack immediately
-	if uint8(n) < c.blksize {
+	if !c.ackTimeout && uint8(n) < c.blksize {
 		c.done = true
 		return c.getAck
 	}
@@ -444,8 +508,12 @@ func (c *conn) writeData() stateType {
 		return c.writeData
 	}
 
+	c.ackTimeout = false
+
 	// Reset window
 	c.window = 0
+
+	// TODO: store tx_time NOW
 
 	return c.getAck
 }
@@ -494,7 +562,7 @@ func (c *conn) readSetup() stateType {
 		c.rx.buf = make([]byte, needed)
 	}
 
-	c.unackWin = make(map[uint16][]byte, c.windowsize)
+	// c.unackWin = make(map[uint16][]byte, c.windowsize)
 
 	// If there we're not options negotiated, send ACK
 	// Client never sends OACK
@@ -516,7 +584,7 @@ func (c *conn) readSetup() stateType {
 		return nil
 	}
 
-	c.unackBlock = ^uint16(0)
+	// c.unackBlock = ^uint16(0)
 
 	return c.read
 }
@@ -544,173 +612,173 @@ func (c *conn) read() stateType {
 
 // readDatagram reads a single datagram into rx
 func (c *conn) readData() stateType {
-	if c.tries >= c.retransmit {
-		c.log.debug("Max retries exceeded")
-		c.sendError(ErrCodeNotDefined, "max retries reached")
-		c.err = wrapError(ErrMaxRetries, "reading data")
-		return nil
-	}
-	c.tries++
-
-	c.log.trace("Waiting for DATA from %s\n", c.remoteAddr)
-
-	oack := datagram{}
-	if c.block == 0 {
-		oack = c.tx
-	}
-
-	_, err := c.readFromNet()
-	if err != nil {
-		c.log.debug("error receiving block %d: %v", c.block+1, err)
-
-		if c.block == 0 {
-			// Retransmit an OACK
-			c.log.trace("Resending %s", c.tx)
-			c.tx = oack
-			c.writeToNet(c.fragmentRequest())
-		} else {
-			c.log.trace("Resending ACK for %d\n", c.block)
-			if err := c.sendAck(c.block); err != nil {
-				c.log.debug("resending ACK %v", err)
-			}
-			c.window = 0
-			c.tries += c.triesAck
-		}
-
-		return c.readData
-	}
-
-	// validate datagram
-	if err := c.rx.validate(); err != nil {
-		c.err = wrapError(err, "validating read data")
-		return nil
-	}
-
-	// Check for opcode
-	switch op := c.rx.opcode(); op {
-	case opCodeDATA:
-	case opCodeERROR:
-		// Received an error
-		c.err = wrapError(c.remoteError(), "reading data")
-		return nil
-	default:
-		c.err = wrapError(&errUnexpectedDatagram{dg: c.rx.String()}, "read data response")
-		return nil
-	}
-
-	c.log.trace("Received block %d\n", c.rx.block())
-	c.tries = 0
-
+	// if c.tries >= c.retransmit {
+	// 	c.log.debug("Max retries exceeded")
+	// 	c.sendError(ErrCodeNotDefined, "max retries reached")
+	// 	c.err = wrapError(ErrMaxRetries, "reading data")
+	// 	return nil
+	// }
+	// c.tries++
+	//
+	// c.log.trace("Waiting for DATA from %s\n", c.remoteAddr)
+	//
+	// oack := datagram{}
+	// if c.block == 0 {
+	// 	oack = c.tx
+	// }
+	//
+	// _, err := c.readFromNet()
+	// if err != nil {
+	// 	c.log.debug("error receiving block %d: %v", c.block+1, err)
+	//
+	// 	if c.block == 0 {
+	// 		// Retransmit an OACK
+	// 		c.log.trace("Resending %s", c.tx)
+	// 		c.tx = oack
+	// 		c.writeToNet(c.fragmentRequest())
+	// 	} else {
+	// 		c.log.trace("Resending ACK for %d\n", c.block)
+	// 		if err := c.sendAck(c.block); err != nil {
+	// 			c.log.debug("resending ACK %v", err)
+	// 		}
+	// 		c.window = 0
+	// 		c.tries += c.triesAck
+	// 	}
+	//
+	// 	return c.readData
+	// }
+	//
+	// // validate datagram
+	// if err := c.rx.validate(); err != nil {
+	// 	c.err = wrapError(err, "validating read data")
+	// 	return nil
+	// }
+	//
+	// // Check for opcode
+	// switch op := c.rx.opcode(); op {
+	// case opCodeDATA:
+	// case opCodeERROR:
+	// 	// Received an error
+	// 	c.err = wrapError(c.remoteError(), "reading data")
+	// 	return nil
+	// default:
+	// 	c.err = wrapError(&errUnexpectedDatagram{dg: c.rx.String()}, "read data response")
+	// 	return nil
+	// }
+	//
+	// c.log.trace("Received block %d\n", c.rx.block())
+	// c.tries = 0
+	//
 	return c.ackData
 }
 
 // ackData handles block sequence, windowing, and acknowledgements
 func (c *conn) ackData() stateType {
-	if c.rx.block() <= c.block {
-		c.log.debug("Blocks %d already received.", c.rx.block())
-		return c.read
-	}
-
-	switch diff := c.rx.block() - c.block; {
-	case diff == 1:
-		// Next block as expected; increment window and block
-		c.log.trace("ackData diff: %d, current block: %d, rx block %d", diff, c.block, c.rx.block())
-		c.block++
-		c.window++
-		c.triesAck = 0
-		c.unackBlock = c.block + c.windowsize
-
-		// Unacked block received in order
-		if _, ok := c.unackWin[c.block]; ok {
-			delete(c.unackWin, c.block)
-		}
-	case diff <= c.windowsize:
-		// We missed blocks
-		c.log.trace("ackData diff: %d, current block: %d, rx block %d", diff, c.block, c.rx.block())
-
-		if data, ok := c.unackWin[c.block+1]; ok {
-			c.log.debug("Block %d found in unacked window.", c.block+1)
-
-			_, err := c.rxBuf.Write(data)
-			if err != nil {
-				c.err = wrapError(err, "writing to rxBuf after read")
-				return nil
-			}
-
-			c.block++
-			c.window++
-			c.triesAck = 0
-			delete(c.unackWin, c.block)
-
-			// We missed other blocks
-			if diff-1 > 1 {
-				return c.ackData
-			}
-
-			// Increase to last received block
-			c.block++
-			c.window++
-			break
-		} else {
-			c.log.debug("Block %d not found in extra buffer.", c.block+1)
-			if _, ok := c.unackWin[c.rx.block()]; !ok {
-				c.log.debug("Saving %d in extra buffer.", c.rx.block())
-				c.unackWin[c.rx.block()] = c.rx.data()
-			}
-		}
-
-		// Ignore, we need to catchup with server
-		if c.unackBlock < c.rx.block() {
-			c.unackBlock = c.rx.block()
-			return c.read
-		}
-
-		// ACK previous block, reset window, and return sequence error
-		c.log.debug("Missing blocks between %d and %d. Resetting to block %d", c.block, c.rx.block(), c.block)
-
-		if c.triesAck >= c.retransmit {
-			c.log.debug("Max retries exceeded")
-			c.sendError(ErrCodeNotDefined, "max retries reached")
-			c.err = wrapError(ErrMaxRetries, "reading data")
-			return nil
-		}
-		if err := c.sendAck(c.block); err != nil {
-			c.err = wrapError(err, "sending missed block(s) ACK")
-			return nil
-		}
-
-		c.triesAck++
-		c.window = 0
-		c.unackBlock = c.rx.block()
-
-		return c.read
-	}
-
-	// Add data to buffer
-	n, err := c.rxBuf.Write(c.rx.data())
-	if err != nil {
-		c.err = wrapError(err, "writing to rxBuf after read")
-		return nil
-	}
-
-	if n < int(c.blksize) {
-		// Reveived last DATA, we're done
-		c.done = true
-	}
-
-	if c.window < c.windowsize && n >= int(c.blksize) {
-		// We haven't reached the window
-		return c.read
-	}
-
-	// Reached the windowsize or final data, send ACK and reset window
-	c.log.trace("window %d, windowsize: %d, offset: %d, blksize: %d", c.window, c.windowsize, c.rx.offset, c.blksize)
-	c.window = 0
-	c.log.trace("Window %d reached, sending ACK for %d\n", c.windowsize, c.block)
-	if err := c.sendAck(c.block); err != nil {
-		c.err = wrapError(err, "sending DATA ACK")
-		return nil
-	}
+	// if c.rx.block() <= c.block {
+	// 	c.log.debug("Blocks %d already received.", c.rx.block())
+	// 	return c.read
+	// }
+	//
+	// switch diff := c.rx.block() - c.block; {
+	// case diff == 1:
+	// 	// Next block as expected; increment window and block
+	// 	c.log.trace("ackData diff: %d, current block: %d, rx block %d", diff, c.block, c.rx.block())
+	// 	c.block++
+	// 	c.window++
+	// 	c.triesAck = 0
+	// 	c.unackBlock = c.block + c.windowsize
+	//
+	// 	// Unacked block received in order
+	// 	if _, ok := c.unackWin[c.block]; ok {
+	// 		delete(c.unackWin, c.block)
+	// 	}
+	// case diff <= c.windowsize:
+	// 	// We missed blocks
+	// 	c.log.trace("ackData diff: %d, current block: %d, rx block %d", diff, c.block, c.rx.block())
+	//
+	// 	if data, ok := c.unackWin[c.block+1]; ok {
+	// 		c.log.debug("Block %d found in unacked window.", c.block+1)
+	//
+	// 		_, err := c.rxBuf.Write(data)
+	// 		if err != nil {
+	// 			c.err = wrapError(err, "writing to rxBuf after read")
+	// 			return nil
+	// 		}
+	//
+	// 		c.block++
+	// 		c.window++
+	// 		c.triesAck = 0
+	// 		delete(c.unackWin, c.block)
+	//
+	// 		// We missed other blocks
+	// 		if diff-1 > 1 {
+	// 			return c.ackData
+	// 		}
+	//
+	// 		// Increase to last received block
+	// 		c.block++
+	// 		c.window++
+	// 		break
+	// 	} else {
+	// 		c.log.debug("Block %d not found in extra buffer.", c.block+1)
+	// 		if _, ok := c.unackWin[c.rx.block()]; !ok {
+	// 			c.log.debug("Saving %d in extra buffer.", c.rx.block())
+	// 			c.unackWin[c.rx.block()] = c.rx.data()
+	// 		}
+	// 	}
+	//
+	// 	// Ignore, we need to catchup with server
+	// 	if c.unackBlock < c.rx.block() {
+	// 		c.unackBlock = c.rx.block()
+	// 		return c.read
+	// 	}
+	//
+	// 	// ACK previous block, reset window, and return sequence error
+	// 	c.log.debug("Missing blocks between %d and %d. Resetting to block %d", c.block, c.rx.block(), c.block)
+	//
+	// 	if c.triesAck >= c.retransmit {
+	// 		c.log.debug("Max retries exceeded")
+	// 		c.sendError(ErrCodeNotDefined, "max retries reached")
+	// 		c.err = wrapError(ErrMaxRetries, "reading data")
+	// 		return nil
+	// 	}
+	// 	if err := c.sendAck(c.block); err != nil {
+	// 		c.err = wrapError(err, "sending missed block(s) ACK")
+	// 		return nil
+	// 	}
+	//
+	// 	c.triesAck++
+	// 	c.window = 0
+	// 	c.unackBlock = c.rx.block()
+	//
+	// 	return c.read
+	// }
+	//
+	// // Add data to buffer
+	// n, err := c.rxBuf.Write(c.rx.data())
+	// if err != nil {
+	// 	c.err = wrapError(err, "writing to rxBuf after read")
+	// 	return nil
+	// }
+	//
+	// if n < int(c.blksize) {
+	// 	// Reveived last DATA, we're done
+	// 	c.done = true
+	// }
+	//
+	// if c.window < c.windowsize && n >= int(c.blksize) {
+	// 	// We haven't reached the window
+	// 	return c.read
+	// }
+	//
+	// // Reached the windowsize or final data, send ACK and reset window
+	// c.log.trace("window %d, windowsize: %d, offset: %d, blksize: %d", c.window, c.windowsize, c.rx.offset, c.blksize)
+	// c.window = 0
+	// c.log.trace("Window %d reached, sending ACK for %d\n", c.windowsize, c.block)
+	// if err := c.sendAck(c.block); err != nil {
+	// 	c.err = wrapError(err, "sending DATA ACK")
+	// 	return nil
+	// }
 
 	return c.read
 }
@@ -805,7 +873,7 @@ func (c *conn) parseOptions() (options, error) {
 			if err != nil {
 				return nil, &errParsingOption{option: opt, value: val}
 			}
-			c.windowsize = uint16(size)
+			c.windowsize = uint8(size)
 			ackOpts[opt] = val
 		case optMode:
 			if val == string(ModeOctet) {
@@ -868,7 +936,9 @@ func (c *conn) getAck() stateType {
 	sAddr, err := c.readFromNet()
 	if err != nil {
 		c.log.debug("Error waiting for ACK: %v", err)
-		c.unreadWindow()
+		// TODO: retx last buffer
+		// add ack timeout flag and set to true here
+		// c.unreadWindow()
 
 		c.log.trace("Resending block %d\n", c.block+1)
 		return c.writeData
@@ -903,7 +973,8 @@ func (c *conn) getAck() stateType {
 	switch op := c.rx.opcode(); op {
 	case opCodeOACK:
 		c.log.trace("Received duplicate OACK, excepting ACK for block %d", c.block)
-		c.unreadWindow()
+		// TODO: handle this case
+		// c.unreadWindow()
 
 		c.log.trace("Resending block %d\n", c.block+1)
 		return c.writeData
@@ -918,42 +989,52 @@ func (c *conn) getAck() stateType {
 		return nil
 	}
 
+	// TODO:
+	// read ack payload up to windowsize
+	// call pushQueue to add unacked to buffer
+	// if an element is equals to 1, compare the index with the block number in txwindow at same index:
+	// if not in unack_buff add to it append(unack_buff, {c.rx.block(), c.rx.bytes()})
+	// else if an element is equals to 0 and len(unack_buff) > 0:
+	// get the block number from tx_window and check if unack_buff
+	// if present, remove (acked)
+	// unackBlock = len(unack_buff)
+
 	// Check block #
-	if rxBlock := c.rx.block(); rxBlock != c.block {
-		if rxBlock > c.block {
-			// Out of order ACKs can cause this scenario, ignore the ACK
-			c.log.debug("Received ACK > current block, ignoring.")
-			return c.getAck
-		}
-		c.log.debug("Expected ACK for block %d, got %d. Resetting to block %d.", c.block, rxBlock, rxBlock)
-		c.txBuf.UnreadSlots(int(c.block - rxBlock))
-		c.block = rxBlock
-		c.window = 0
-
-		// Reset done in case error on final send
-		c.done = false
-	}
-
-	c.tries = 0
-
-	if c.tx.opcode() == opCodeOACK {
-		return c.write
-	}
+	// if rxBlock := c.rx.block(); rxBlock != c.block {
+	// 	if rxBlock > c.block {
+	// 		// Out of order ACKs can cause this scenario, ignore the ACK
+	// 		c.log.debug("Received ACK > current block, ignoring.")
+	// 		return c.getAck
+	// 	}
+	// 	c.log.debug("Expected ACK for block %d, got %d. Resetting to block %d.", c.block, rxBlock, rxBlock)
+	// 	c.txBuf.UnreadSlots(int(c.block - rxBlock))
+	// 	c.block = rxBlock
+	// 	c.window = 0
+	//
+	// 	// Reset done in case error on final send
+	// 	c.done = false
+	// }
+	//
+	// c.tries = 0
+	//
+	// if c.tx.opcode() == opCodeOACK {
+	// 	return c.write
+	// }
 	return c.writeData
 }
 
-func (c *conn) unreadWindow() {
-	if c.window > 0 {
-		// last window retx
-		c.txBuf.UnreadSlots(int(c.window))
-		c.block -= c.window
-		c.done = false
-		c.window = 0
-	} else {
-		c.txBuf.UnreadSlots(int(c.windowsize))
-		c.block -= c.windowsize
-	}
-}
+// func (c *conn) unreadWindow() {
+// 	if c.window > 0 {
+// 		// last window retx
+// 		c.txBuf.UnreadSlots(int(c.window))
+// 		c.block -= c.window
+// 		c.done = false
+// 		c.window = 0
+// 	} else {
+// 		c.txBuf.UnreadSlots(int(c.windowsize))
+// 		c.block -= c.windowsize
+// 	}
+// }
 
 // remoteError formats the error in rx, sets err and returns the error.
 func (c *conn) remoteError() error {
@@ -1059,42 +1140,53 @@ func (c *conn) writeToNet(fragment bool) error {
 // up to the number of slots.
 type ringBuffer struct {
 	bytes.Buffer
-	slots int
-	size  int
-
-	buf      []byte // buffer space
-	slotsLen []int  // len of data written to each slot
-	current  int    // current to be read or written to
-	head     int    // head of buffer
+	lastSlot bool
+	slots    int
+	size     int
+	current  int    // current slot to be read
+	queue    []int  // queue of slots to read again
+	buf      []byte // buffer of last sent window
 }
 
 // newRingBuffer initializes a new ringBuffer
 func newRingBuffer(slots int, size int) *ringBuffer {
 	return &ringBuffer{
-		buf:      make([]byte, size*slots),
-		slotsLen: make([]int, size*slots),
-		slots:    slots,
-		size:     size,
+		buf:   make([]byte, size*slots),
+		slots: slots,
+		size:  size,
 	}
 }
 
 // Len returns bytes.Buffer.Len() + any buffer space between current and head
+// add unack blocks counter and update every ack received
 func (r *ringBuffer) Len() int {
-	bufInUse := (r.head - r.current) * r.size
-	return r.Buffer.Len() + bufInUse
+	buflen := len(r.queue) * r.size
+	return r.Buffer.Len() + buflen
 }
 
 // Read reads data from byte.Buffer if current and head are equal.
 // If current is behind head, data will be read from buf.
-func (r *ringBuffer) Read(p []byte) (int, error) {
-	slot := r.current % r.slots
-	offset := slot * r.size
+func (r *ringBuffer) Read(p []byte, window int) (int, error) {
+	offset := window * r.size
 
-	if r.current != r.head {
-		// Copy data out of buf and increment current
-		len := offset + r.slotsLen[slot]
-		n := copy(p, r.buf[offset:len])
-		r.current++
+	// Copy data from buf
+	if len(r.queue) > 0 {
+		offlen := r.queue[0] * r.size
+
+		var n int
+		if !r.lastSlot {
+			n = copy(p, r.buf[offlen:offlen+r.size])
+		} else {
+			n = copy(p, r.buf[offlen:])
+			r.lastSlot = false
+		}
+
+		// overwrite window slot
+		n = copy(r.buf[offset:offset+n], p[:n])
+
+		// Pop from queue
+		r.PopQueue()
+
 		return n, nil
 	}
 
@@ -1102,18 +1194,24 @@ func (r *ringBuffer) Read(p []byte) (int, error) {
 	// (len(p) == c.blksize)
 	n, err := r.Buffer.Read(p)
 	n = copy(r.buf[offset:offset+n], p[:n])
-	r.slotsLen[slot] = n
+	if n < r.size {
+		r.lastSlot = true
+	}
 
-	// Increment current and head
+	// Increment current
 	r.current++
-	r.head = r.current
+
 	return n, err
 }
 
-// UnreadSlots decrements the current slot, resulting in the
-// new reads going to the ringBuffer until current catches up to head
-func (r *ringBuffer) UnreadSlots(n int) {
-	r.current -= n
+func (r *ringBuffer) PushQueue(slot int) {
+	r.queue = append(r.queue, slot)
+}
+
+func (r *ringBuffer) PopQueue() {
+	if len(r.queue) > 0 {
+		r.queue = r.queue[1:]
+	}
 }
 
 // readerFunc is an adapter type to convert a function

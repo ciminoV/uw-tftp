@@ -167,11 +167,12 @@ func (d *datagram) writeAck(block uint16) {
 	d.writeUint16(block)
 }
 
-func (d *datagram) writeData(block uint16, data []byte) {
+func (d *datagram) writeData(block uint16, window uint8, data []byte) {
 	d.reset(sizeofOpcode + sizeofBlock + len(data))
 
 	d.writeUint8(uint8(opCodeDATA))
 	d.writeUint16(block)
+	d.writeUint8(window)
 	d.writeBytes(data)
 }
 
