@@ -71,9 +71,10 @@ const (
 	optMode         = "M"
 
 	sizeofOpcode  = 1 // Size of a opcode in bytes
+	sizeofWindow  = 1 // Size of a window
 	sizeofErrcode = 2 // Size of an error code in bytes
 	sizeofBlock   = 2 // Size of a block number in bytes
-	sizeofHdr     = sizeofOpcode + sizeofBlock
+	sizeofHdr     = sizeofOpcode + sizeofWindow + sizeofBlock
 	sizeofErrHdr  = sizeofOpcode + sizeofErrcode
 )
 
@@ -119,7 +120,7 @@ func (d datagram) String() string {
 	case opCodeOACK:
 		return fmt.Sprintf("%s[Options: %s]", o, d.options())
 	case opCodeACK:
-		return fmt.Sprintf("%s[Block: %d]", o, d.block())
+		return fmt.Sprintf("%s[Bitmask: %08b]", o, d.ack())
 	case opCodeERROR:
 		return fmt.Sprintf("%s[Code: %s; Message: %q]", o, d.errorCode(), d.errMsg())
 	default:
@@ -160,19 +161,23 @@ func (d *datagram) reset(size int) {
 }
 
 // DATAGRAM CONSTRUCTORS
-func (d *datagram) writeAck(block uint16) {
-	d.reset(sizeofOpcode + sizeofBlock)
+
+// Write an ack packet
+// (Assume bitmask is padded)
+func (d *datagram) writeAck(bitmask []byte) {
+	d.reset(sizeofOpcode + len(bitmask)/8)
 
 	d.writeUint8(uint8(opCodeACK))
-	d.writeUint16(block)
+	d.writeBinaryString(bitmask)
 }
 
+// Write a data packet (block)
 func (d *datagram) writeData(block uint16, window uint8, data []byte) {
-	d.reset(sizeofOpcode + sizeofBlock + len(data))
+	d.reset(sizeofOpcode + sizeofWindow + sizeofBlock + len(data))
 
 	d.writeUint8(uint8(opCodeDATA))
-	d.writeUint16(block)
 	d.writeUint8(window)
+	d.writeUint16(block)
 	d.writeBytes(data)
 }
 
@@ -226,9 +231,14 @@ func (d *datagram) writeReq(o opcode, filename string, mode TransferMode, option
 
 // FIELD ACCESSORS
 
-// Block # from DATA and ACK datagrams
+// Lost block numbers from ACK
+func (d *datagram) ack() []byte {
+	return d.buf[sizeofOpcode:d.offset]
+}
+
+// Block # from DATA
 func (d *datagram) block() uint16 {
-	return binary.BigEndian.Uint16(d.buf[sizeofOpcode:sizeofHdr])
+	return binary.BigEndian.Uint16(d.buf[sizeofOpcode+sizeofWindow : sizeofHdr])
 }
 
 // Data from DATA datagram
@@ -289,7 +299,6 @@ func (d *datagram) options() options {
 	}
 
 	// Each option key is one character
-	// TODO: use byte instead of string for keys
 	for i := 0; i < len(optSlice); i++ {
 		if len(optSlice[i]) == 0 {
 			continue
@@ -308,6 +317,7 @@ func (d *datagram) options() options {
 }
 
 // BUFFER WRITING FUNCTIONS
+
 func (d *datagram) writeBytes(b []byte) {
 	copy(d.buf[d.offset:], b)
 	d.offset += len(b)
@@ -320,6 +330,22 @@ func (d *datagram) writeNull() {
 
 func (d *datagram) writeString(str string) {
 	d.writeBytes([]byte(str))
+}
+
+// Convert a binary string to bytes and write to datagram buffer
+func (d *datagram) writeBinaryString(b []byte) {
+	var dst []byte = make([]byte, len(b)/8)
+	var bitMask byte = 1
+
+	bitCounter := 0
+	for i := 0; i < len(b)/8; i++ {
+		for bit := 0; bit < 8; bit++ {
+			dst[i] |= (b[bitCounter] & bitMask) << (7 - bit)
+			bitCounter++
+		}
+	}
+
+	d.writeBytes(dst)
 }
 
 func (d *datagram) writeUint16(i uint16) {
@@ -368,7 +394,7 @@ func (d *datagram) validate() error {
 				return errors.New("Invalid transfer mode")
 			}
 		}
-	case opCodeACK, opCodeDATA:
+	case opCodeDATA:
 		if d.offset < sizeofHdr {
 			return errors.New("Corrupt block number")
 		}

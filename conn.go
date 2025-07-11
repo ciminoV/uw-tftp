@@ -175,8 +175,9 @@ type conn struct {
 	txBuf *ringBuffer  // buffers outgoing data, retaining windowsize * blksize
 	rxBuf bytes.Buffer // buffer incoming data
 
-	txWin    []dataBlock
-	unackWin []dataBlock
+	txWin      []dataBlock
+	unackWin   []dataBlock
+	ackPayload []byte
 
 	// Datgrams
 
@@ -376,6 +377,10 @@ func (c *conn) writeSetup() stateType {
 	c.txWin = make([]dataBlock, c.windowsize)
 	c.unackWin = make([]dataBlock, c.windowsize)
 
+	// Init ack bitmask
+	bitlen := (1 + (c.windowsize-1)/8) * 8 // add padding
+	c.ackPayload = make([]byte, bitlen)
+
 	// Client setup is done, ready to send data
 	if c.isClient {
 		return nil
@@ -508,8 +513,6 @@ func (c *conn) writeData() stateType {
 		return c.writeData
 	}
 
-	c.ackTimeout = false
-
 	// Reset window
 	c.window = 0
 
@@ -568,7 +571,8 @@ func (c *conn) readSetup() stateType {
 	// Client never sends OACK
 	if len(ackOpts) == 0 || c.isClient {
 		c.log.trace("Sending ACK to %s\n", c.remoteAddr)
-		c.tx.writeAck(c.block)
+		// TODO: write ack
+		// c.tx.writeAck(c.block)
 	} else {
 		c.log.trace("Sending OACK to %s\n", c.remoteAddr)
 		c.tx.writeOptionAck(ackOpts)
@@ -910,11 +914,38 @@ func (c *conn) sendError(code ErrorCode, msg string) {
 }
 
 // sendAck sends ACK
-func (c *conn) sendAck(block uint16) error {
-	c.tx.writeAck(block)
+func (c *conn) sendAck() error {
+	c.tx.writeAck(c.ackPayload)
 
-	c.log.trace("Sending ACK for %d to %s\n", block, c.remoteAddr)
+	// TODO: print the not rxed blocks
+	c.log.trace("Sending ACK for %d to %s\n", c.block, c.remoteAddr)
 	return wrapError(c.writeToNet(false), "sending ACK")
+}
+
+// Retrieve lost blocks from ACK payload
+//
+// Bits set to 1 are lost blocks that the receiver didn't ack
+// Use their indexes to retrieve block numbers from tx window
+func (c *conn) getUnackBlocks(ackp []byte) []uint16 {
+	var blocks []uint16
+
+	// Read each byte (ignore first byte (opcode))
+	for i := 1; i < len(ackp); i++ {
+		if ackp[i] == 0 {
+			continue
+		}
+
+		// Read every bit of the byte and if
+		// it is equal to 1 retrieve block number from txWin
+		for j := 0; j < 8; j++ {
+			if (ackp[i] & (1 << (7 - j))) != 0 {
+				index := (i-1)*8 + j // Start index from 0
+				blocks = append(blocks, c.txWin[index].block)
+			}
+		}
+	}
+
+	return blocks
 }
 
 // getAck reads ACK, validates structure and checks for ERROR
@@ -936,13 +967,12 @@ func (c *conn) getAck() stateType {
 	sAddr, err := c.readFromNet()
 	if err != nil {
 		c.log.debug("Error waiting for ACK: %v", err)
-		// TODO: retx last buffer
-		// add ack timeout flag and set to true here
-		// c.unreadWindow()
+		c.ackTimeout = true
 
-		c.log.trace("Resending block %d\n", c.block+1)
 		return c.writeData
 	}
+
+	c.ackTimeout = false
 
 	// Send error to requests not from requesting client. May consider
 	// ignoring entirely.
@@ -956,7 +986,6 @@ func (c *conn) getAck() stateType {
 		go func() {
 			var err datagram
 			err.writeError(ErrCodeUnknownTransferID, "Unexpected TID")
-			// Don't care about an error here, just a courtesy
 			_, _ = c.netConn.WriteTo(err.bytes(), sAddr)
 		}()
 
@@ -972,14 +1001,12 @@ func (c *conn) getAck() stateType {
 	// Check opcode
 	switch op := c.rx.opcode(); op {
 	case opCodeOACK:
-		c.log.trace("Received duplicate OACK, excepting ACK for block %d", c.block)
-		// TODO: handle this case
-		// c.unreadWindow()
-
-		c.log.trace("Resending block %d\n", c.block+1)
+		c.log.trace("Received duplicate OACK. Resending last window.\n")
 		return c.writeData
 	case opCodeACK:
-		c.log.trace("Got ACK for block %d\n", c.rx.block())
+		c.ackPayload = c.rx.ack()
+
+		c.log.trace("Received ACK. Missing blocks: %d\n", c.getUnackBlocks(c.ackPayload))
 		// continue on
 	case opCodeERROR:
 		c.err = wrapError(c.remoteError(), "error receiving ACK")
