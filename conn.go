@@ -9,6 +9,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"slices"
 	"strconv"
 	"time"
 
@@ -440,12 +441,12 @@ func (c *conn) writeData() stateType {
 	var n int
 	var err error
 
+	// ACK not received or duplicate ACK, retransmit last window
 	if c.ackTimeout {
-		// Last ACK not received, retransmit last window
 		block := c.txWin[c.window].block
 		payload := c.txWin[c.window].payload
 
-		c.tx.writeData(block, c.window, payload)
+		c.tx.writeData(c.window, block, payload)
 
 		// If this is last block, move to get ack immediately
 		if uint8(len(payload)) < c.blksize {
@@ -455,7 +456,7 @@ func (c *conn) writeData() stateType {
 		}
 
 	} else {
-		// ACK received, transmit new window
+		// received ACK, transmit new window
 		if c.unackBlocks > 0 {
 			// Retransmit not acked block
 			unack_block := c.unackWin[c.window].block
@@ -465,7 +466,7 @@ func (c *conn) writeData() stateType {
 				c.err = wrapError(err, "reading data from txBuf before writing to network")
 				return nil
 			}
-			c.tx.writeData(unack_block, c.window, c.buf[:n])
+			c.tx.writeData(c.window, unack_block, c.buf[:n])
 
 			// Copy last transmitted block to tx window
 			c.txWin[c.window].block = unack_block
@@ -483,7 +484,7 @@ func (c *conn) writeData() stateType {
 				c.err = wrapError(err, "reading data from txBuf before writing to network")
 				return nil
 			}
-			c.tx.writeData(c.block, c.window, c.buf[:n])
+			c.tx.writeData(c.window, c.block, c.buf[:n])
 
 			// Copy last transmitted block to tx window
 			c.txWin[c.window].block = c.block
@@ -616,6 +617,8 @@ func (c *conn) read() stateType {
 
 // readDatagram reads a single datagram into rx
 func (c *conn) readData() stateType {
+	// TODO: write rx of data packets
+
 	// if c.tries >= c.retransmit {
 	// 	c.log.debug("Max retries exceeded")
 	// 	c.sendError(ErrCodeNotDefined, "max retries reached")
@@ -926,26 +929,67 @@ func (c *conn) sendAck() error {
 //
 // Bits set to 1 are lost blocks that the receiver didn't ack
 // Use their indexes to retrieve block numbers from tx window
-func (c *conn) getUnackBlocks(ackp []byte) []uint16 {
+func (c *conn) getUnackBlocks(ack_p []byte) []uint16 {
 	var blocks []uint16
 
-	// Read each byte (ignore first byte (opcode))
-	for i := 1; i < len(ackp); i++ {
-		if ackp[i] == 0 {
+	// Read each byte
+	read_bits := 8
+	for i := 0; i < len(ack_p); i++ {
+		// Empty byte
+		if ack_p[i] == 0 {
 			continue
 		}
 
-		// Read every bit of the byte and if
-		// it is equal to 1 retrieve block number from txWin
-		for j := 0; j < 8; j++ {
-			if (ackp[i] & (1 << (7 - j))) != 0 {
-				index := (i-1)*8 + j // Start index from 0
-				blocks = append(blocks, c.txWin[index].block)
+		// Last byte, read up to c.windowsize bits
+		if i == len(ack_p)-1 {
+			if rem := int(c.windowsize) % read_bits; rem != 0 {
+				read_bits = rem
+			}
+		}
+
+		// Read every bit of the byte
+		for j := 0; j < read_bits; j++ {
+			// If equals to 1 get block number from txWin and update unackWin
+			if (ack_p[i] & (1 << (7 - j))) != 0 {
+				index := i*8 + j
+				tx_data := c.txWin[index]
+
+				c.txBuf.PushQueue(index)
+				if idx := slices.IndexFunc(c.unackWin, func(d dataBlock) bool { return d.block == tx_data.block }); idx < 0 {
+					c.unackWin = append(c.unackWin, tx_data)
+				}
+
+				blocks = append(blocks, tx_data.block)
+			} else {
+				if len(c.unackWin) > 0 {
+					// Got ack for a previously lost block
+					index := i*8 + j
+					tx_data := c.txWin[index]
+
+					// Remove from unackWin
+					idx := slices.IndexFunc(c.unackWin, func(d dataBlock) bool { return d.block == tx_data.block })
+					c.unackWin = append(c.unackWin[:idx], c.unackWin[idx+1:]...)
+				}
 			}
 		}
 	}
 
+	c.unackBlocks = len(c.unackWin)
+
 	return blocks
+}
+
+// Return true if the receiver lost all packets.
+//
+// If all sent packets are lost, receiver timeouts and send an ack with only 1s
+// treat it as a duplicate ack.
+func (c *conn) windowLost(b []byte) bool {
+	for _, v := range b {
+		if v != 255 {
+			return false
+		}
+	}
+	return true
 }
 
 // getAck reads ACK, validates structure and checks for ERROR
@@ -1004,9 +1048,18 @@ func (c *conn) getAck() stateType {
 		c.log.trace("Received duplicate OACK. Resending last window.\n")
 		return c.writeData
 	case opCodeACK:
-		c.ackPayload = c.rx.ack()
+		ack_payload := c.rx.ack()
 
-		c.log.trace("Received ACK. Missing blocks: %d\n", c.getUnackBlocks(c.ackPayload))
+		if c.windowLost(ack_payload) {
+			c.ackTimeout = true
+
+			c.log.trace("Duplicate ACK. Resending last window.")
+		} else {
+			lost_blocks := c.getUnackBlocks(ack_payload)
+
+			c.log.trace("Received ACK. Lost blocks: %d\n", lost_blocks)
+		}
+
 		// continue on
 	case opCodeERROR:
 		c.err = wrapError(c.remoteError(), "error receiving ACK")
@@ -1016,52 +1069,19 @@ func (c *conn) getAck() stateType {
 		return nil
 	}
 
-	// TODO:
-	// read ack payload up to windowsize
-	// call pushQueue to add unacked to buffer
-	// if an element is equals to 1, compare the index with the block number in txwindow at same index:
-	// if not in unack_buff add to it append(unack_buff, {c.rx.block(), c.rx.bytes()})
-	// else if an element is equals to 0 and len(unack_buff) > 0:
-	// get the block number from tx_window and check if unack_buff
-	// if present, remove (acked)
-	// unackBlock = len(unack_buff)
+	// Reset done in case error on final send
+	if len(c.unackWin) > 0 {
+		c.done = false
+	}
 
-	// Check block #
-	// if rxBlock := c.rx.block(); rxBlock != c.block {
-	// 	if rxBlock > c.block {
-	// 		// Out of order ACKs can cause this scenario, ignore the ACK
-	// 		c.log.debug("Received ACK > current block, ignoring.")
-	// 		return c.getAck
-	// 	}
-	// 	c.log.debug("Expected ACK for block %d, got %d. Resetting to block %d.", c.block, rxBlock, rxBlock)
-	// 	c.txBuf.UnreadSlots(int(c.block - rxBlock))
-	// 	c.block = rxBlock
-	// 	c.window = 0
-	//
-	// 	// Reset done in case error on final send
-	// 	c.done = false
-	// }
-	//
-	// c.tries = 0
-	//
-	// if c.tx.opcode() == opCodeOACK {
-	// 	return c.write
-	// }
+	c.tries = 0
+
+	if c.tx.opcode() == opCodeOACK {
+		return c.write
+	}
+
 	return c.writeData
 }
-
-// func (c *conn) unreadWindow() {
-// 	if c.window > 0 {
-// 		// last window retx
-// 		c.txBuf.UnreadSlots(int(c.window))
-// 		c.block -= c.window
-// 		c.done = false
-// 		c.window = 0
-// 	} else {
-// 		c.txBuf.UnreadSlots(int(c.windowsize))
-// 		c.block -= c.windowsize
-// 	}
-// }
 
 // remoteError formats the error in rx, sets err and returns the error.
 func (c *conn) remoteError() error {

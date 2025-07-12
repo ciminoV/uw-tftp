@@ -172,7 +172,7 @@ func (d *datagram) writeAck(bitmask []byte) {
 }
 
 // Write a data packet (block)
-func (d *datagram) writeData(block uint16, window uint8, data []byte) {
+func (d *datagram) writeData(window uint8, block uint16, data []byte) {
 	d.reset(sizeofOpcode + sizeofWindow + sizeofBlock + len(data))
 
 	d.writeUint8(uint8(opCodeDATA))
@@ -334,11 +334,12 @@ func (d *datagram) writeString(str string) {
 
 // Convert a binary string to bytes and write to datagram buffer
 func (d *datagram) writeBinaryString(b []byte) {
-	var dst []byte = make([]byte, len(b)/8)
+	bytelen := len(b) / 8
+	var dst []byte = make([]byte, bytelen)
 	var bitMask byte = 1
 
 	bitCounter := 0
-	for i := 0; i < len(b)/8; i++ {
+	for i := 0; i < bytelen; i++ {
 		for bit := 0; bit < 8; bit++ {
 			dst[i] |= (b[bitCounter] & bitMask) << (7 - bit)
 			bitCounter++
