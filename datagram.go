@@ -163,7 +163,8 @@ func (d *datagram) reset(size int) {
 // DATAGRAM CONSTRUCTORS
 
 // Write an ack packet
-// (Assume bitmask is padded)
+//
+// Assume bitmask is padded
 func (d *datagram) writeAck(bitmask []byte) {
 	d.reset(sizeofOpcode + len(bitmask)/8)
 
@@ -231,12 +232,17 @@ func (d *datagram) writeReq(o opcode, filename string, mode TransferMode, option
 
 // FIELD ACCESSORS
 
-// Lost block numbers from ACK
+// Lost blocks from ACK datagram
 func (d *datagram) ack() []byte {
 	return d.buf[sizeofOpcode:d.offset]
 }
 
-// Block # from DATA
+// Window index from DATA datagram
+func (d *datagram) window() uint8 {
+	return d.buf[sizeofOpcode]
+}
+
+// Block # from DATA datagram
 func (d *datagram) block() uint16 {
 	return binary.BigEndian.Uint16(d.buf[sizeofOpcode+sizeofWindow : sizeofHdr])
 }
@@ -318,11 +324,13 @@ func (d *datagram) options() options {
 
 // BUFFER WRITING FUNCTIONS
 
+// Write bytes
 func (d *datagram) writeBytes(b []byte) {
 	copy(d.buf[d.offset:], b)
 	d.offset += len(b)
 }
 
+// Write null byte
 func (d *datagram) writeNull() {
 	d.buf[d.offset] = 0x0
 	d.offset++
@@ -332,12 +340,16 @@ func (d *datagram) writeString(str string) {
 	d.writeBytes([]byte(str))
 }
 
+// Write binary string
 // Convert a binary string to bytes and write to datagram buffer
+//
+// Note: It assumes the string is padded (len(b) % 8 == 0)
 func (d *datagram) writeBinaryString(b []byte) {
 	bytelen := len(b) / 8
 	var dst []byte = make([]byte, bytelen)
 	var bitMask byte = 1
 
+	// Store 8 elements of b in a single byte
 	bitCounter := 0
 	for i := 0; i < bytelen; i++ {
 		for bit := 0; bit < 8; bit++ {
@@ -346,19 +358,23 @@ func (d *datagram) writeBinaryString(b []byte) {
 		}
 	}
 
+	// Write dst to datagram
 	d.writeBytes(dst)
 }
 
+// Write uint16 using bigendian
 func (d *datagram) writeUint16(i uint16) {
 	binary.BigEndian.PutUint16(d.buf[d.offset:], i)
 	d.offset += 2
 }
 
+// Write uint8
 func (d *datagram) writeUint8(i uint8) {
 	d.buf[d.offset] = i
 	d.offset++
 }
 
+// Write rrq/wrq options
 func (d *datagram) writeOption(o string, v string) {
 	d.writeString(o)
 	switch o {
@@ -372,6 +388,7 @@ func (d *datagram) writeOption(o string, v string) {
 	d.writeNull()
 }
 
+// Validate header
 func (d *datagram) validate() error {
 	switch {
 	case d.offset < sizeofOpcode:

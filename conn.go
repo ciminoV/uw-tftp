@@ -22,7 +22,7 @@ const (
 	defaultUDPNet            = "udp"
 	defaultTCPNet            = "tcp"
 	defaultTimeout           = time.Second * 60
-	defaultBlksize           = 56
+	defaultBlksize           = 55
 	defaultHdrsize           = sizeofHdr
 	defaultPktsize           = defaultHdrsize + defaultBlksize
 	defaultWindowsize        = 1
@@ -124,6 +124,7 @@ type dataBlock struct {
 	payload []byte
 }
 
+// TODO: add guard_time option (non-negotiable)
 // conn handles TFTP read and write requests
 type conn struct {
 	log        *logger
@@ -169,6 +170,7 @@ type conn struct {
 	err         error // error has occurreds
 	closing     bool  // connection is closing
 	done        bool  // the transfer is complete (or error occurred)
+	duplicate   bool
 
 	// Buffers
 
@@ -180,7 +182,16 @@ type conn struct {
 	unackWin   []dataBlock
 	ackPayload []byte
 
-	// Datgrams
+	rxWin      []dataBlock
+	rxUnackWin []uint16
+	rxFirstw   uint8
+
+	txTime    time.Time
+	rxTime    time.Time
+	rxTimeout time.Duration
+	guardTime time.Duration
+
+	// Datagrams
 
 	tx datagram // Constructs outgoing datagrams
 	rx datagram // Hold and parse current incoming datagram
@@ -231,6 +242,9 @@ func (c *conn) sendRequest() stateType {
 		return nil
 	}
 
+	// Store tx time to compute RTT on reception of OACK
+	c.txTime = time.Now()
+
 	return c.receiveResponse
 }
 
@@ -271,6 +285,9 @@ func (c *conn) receiveResponse() stateType {
 	c.tries = 0
 
 	if c.isSender {
+		// Set timeout to RTT
+		c.timeout = time.Now().Sub(c.txTime)
+
 		return c.handleWRQResponse
 	}
 
@@ -379,6 +396,7 @@ func (c *conn) writeSetup() stateType {
 	c.unackWin = make([]dataBlock, c.windowsize)
 
 	// Init ack bitmask
+	// TODO: set to 1s by default
 	bitlen := (1 + (c.windowsize-1)/8) * 8 // add padding
 	c.ackPayload = make([]byte, bitlen)
 
@@ -500,6 +518,9 @@ func (c *conn) writeData() stateType {
 		return nil
 	}
 
+	// Update transmission time
+	c.txTime = time.Now()
+
 	// Increment the window
 	c.window++
 
@@ -516,8 +537,6 @@ func (c *conn) writeData() stateType {
 
 	// Reset window
 	c.window = 0
-
-	// TODO: store tx_time NOW
 
 	return c.getAck
 }
@@ -617,75 +636,169 @@ func (c *conn) read() stateType {
 
 // readDatagram reads a single datagram into rx
 func (c *conn) readData() stateType {
-	// TODO: write rx of data packets
+	if c.tries >= c.retransmit {
+		c.log.debug("Max retries exceeded")
+		c.sendError(ErrCodeNotDefined, "max retries reached")
+		c.err = wrapError(ErrMaxRetries, "reading data")
+		return nil
+	}
+	c.tries++
 
-	// if c.tries >= c.retransmit {
-	// 	c.log.debug("Max retries exceeded")
-	// 	c.sendError(ErrCodeNotDefined, "max retries reached")
-	// 	c.err = wrapError(ErrMaxRetries, "reading data")
-	// 	return nil
-	// }
-	// c.tries++
-	//
-	// c.log.trace("Waiting for DATA from %s\n", c.remoteAddr)
-	//
-	// oack := datagram{}
-	// if c.block == 0 {
-	// 	oack = c.tx
-	// }
-	//
-	// _, err := c.readFromNet()
-	// if err != nil {
-	// 	c.log.debug("error receiving block %d: %v", c.block+1, err)
-	//
-	// 	if c.block == 0 {
-	// 		// Retransmit an OACK
-	// 		c.log.trace("Resending %s", c.tx)
-	// 		c.tx = oack
-	// 		c.writeToNet(c.fragmentRequest())
-	// 	} else {
-	// 		c.log.trace("Resending ACK for %d\n", c.block)
-	// 		if err := c.sendAck(c.block); err != nil {
-	// 			c.log.debug("resending ACK %v", err)
-	// 		}
-	// 		c.window = 0
-	// 		c.tries += c.triesAck
-	// 	}
-	//
-	// 	return c.readData
-	// }
-	//
-	// // validate datagram
-	// if err := c.rx.validate(); err != nil {
-	// 	c.err = wrapError(err, "validating read data")
-	// 	return nil
-	// }
-	//
-	// // Check for opcode
-	// switch op := c.rx.opcode(); op {
-	// case opCodeDATA:
-	// case opCodeERROR:
-	// 	// Received an error
-	// 	c.err = wrapError(c.remoteError(), "reading data")
-	// 	return nil
-	// default:
-	// 	c.err = wrapError(&errUnexpectedDatagram{dg: c.rx.String()}, "read data response")
-	// 	return nil
-	// }
-	//
-	// c.log.trace("Received block %d\n", c.rx.block())
-	// c.tries = 0
-	//
+	c.log.trace("Waiting for DATA from %s\n", c.remoteAddr)
+
+	oack := datagram{}
+	if c.block == 0 {
+		oack = c.tx
+	}
+
+	_, err := c.readFromNet()
+	if err != nil {
+		c.log.debug("error receiving block %d: %v", c.block+1, err)
+
+		if c.block == 0 {
+			// Retransmit an OACK
+			c.log.trace("Resending %s", c.tx)
+			c.tx = oack
+			c.writeToNet(c.fragmentRequest())
+		} else {
+			// TODO: only if duplicate == true
+			// check up to which block lost and update ack before sending
+			// if dupl == true && w != c.windowsize
+			// for from last window of packet to windowsize
+			// check if block number not already in lost buff
+			// if duplicate == false then unackwin already contains 1s for subsequent blocks
+			c.log.trace("Resending ACK %08b\n", c.ackPayload)
+			if err := c.sendAck(); err != nil {
+				c.log.debug("resending ACK %v", err)
+			}
+			c.window = 0
+			c.tries += c.triesAck
+		}
+
+		return c.readData
+	}
+
+	// validate datagram
+	if err := c.rx.validate(); err != nil {
+		c.err = wrapError(err, "validating read data")
+		return nil
+	}
+
+	// Check for opcode
+	switch op := c.rx.opcode(); op {
+	case opCodeDATA:
+	case opCodeERROR:
+		// Received an error
+		c.err = wrapError(c.remoteError(), "reading data")
+		return nil
+	default:
+		c.err = wrapError(&errUnexpectedDatagram{dg: c.rx.String()}, "read data response")
+		return nil
+	}
+
+	c.log.trace("Received block %d\n", c.rx.block())
+	c.tries = 0
+
 	return c.ackData
 }
 
 // ackData handles block sequence, windowing, and acknowledgements
 func (c *conn) ackData() stateType {
-	// if c.rx.block() <= c.block {
-	// 	c.log.debug("Blocks %d already received.", c.rx.block())
-	// 	return c.read
-	// }
-	//
+	// TODO: ack blocks
+	// if c.rx.block < curr_block duplicate or unack check if lost block
+	// in order blocks write to rxBuf
+	// always reset c.window
+	// the RTT is the time between instant in which sendAck e last ack sent: use this as timeout after sending ack
+	var n int
+	var err error
+
+	// Received a block of new window
+	// Save index of the block in the window and time
+	// For subsequent blocks of the window compute the expected time before the next one
+	if c.window == 0 {
+		c.rxFirstw = c.rx.window()
+		c.rxTime = time.Now()
+	} else {
+		diff_window := c.rx.window() - c.rxFirstw
+		rx_duration := (time.Now().Sub(c.rxTime)) / time.Duration(diff_window)
+
+		c.rxTimeout = rx_duration*(time.Duration(c.windowsize)-time.Duration(c.rx.block())-1) + c.guardTime
+	}
+
+	// New block received
+	// otherwise unacked block or duplicate
+	if c.rx.block() > c.block {
+		// In order block add to a temporary buffer if missed blocks in previous
+		// windows otherwise write data to buffer
+		if c.rx.window() == c.window {
+			c.ackPayload[c.window] = 0x0
+			c.window++
+
+			if len(c.unackWin) > 0 {
+				c.rxWin = append(c.rxWin, dataBlock{c.rx.block(), c.rx.data()})
+			} else {
+				n, err = c.rxBuf.Write(c.rx.data())
+				if err != nil {
+					c.err = wrapError(err, "writing to rxBuf after read")
+					return nil
+				}
+			}
+		} else {
+			// Missed blocks in the current window
+			// Add the block numbers to unack window in increasing order
+			n_unack := c.rx.block() - c.block - 1
+			for i := n_unack; i > 0; i-- {
+				c.rxUnackWin = append(c.rxUnackWin, c.rx.block()-i)
+			}
+
+			c.window = c.rx.window() + 1
+			c.rxWin = append(c.rxWin, dataBlock{c.rx.block(), c.rx.data()})
+		}
+
+		// Data block with highest block # received
+		c.block = c.rx.block()
+
+	} else {
+		// If present in rxUnackWin is a previously lost block
+		// add to rxWin (in order) and remove from rxUnackWin
+		// otherwise it is a duplicate
+		if ok := slices.Contains(c.rxUnackWin, c.rx.block()); ok {
+			idx := slices.IndexFunc(c.rxWin, func(d dataBlock) bool {
+				return d.block > c.rx.block()
+			})
+
+			c.rxWin = append(c.rxWin[:idx+1], c.rxWin[idx:]...)
+			c.rxWin[idx] = dataBlock{c.rx.block(), c.rx.data()}
+
+			c.rxUnackWin = slices.DeleteFunc(c.rxUnackWin, func(b uint16) bool {
+				return b == c.rx.block()
+			})
+
+			// If rxUnackWin is empty there are not out of order packets
+			// write the whole rxWin to rxBuf
+			// otherwise write only in order chuncks
+			// TODO:
+			if len(c.rxUnackWin) > 0 {
+			} else {
+				//while (lost_buff[0].block_number > unord_buff[0].block_number):
+				// write rxWin[0] to rxBuf
+				// and remove from rxWin
+			}
+
+		} else {
+			c.duplicate = true
+		}
+
+		// Increase window
+		// (in between lost blocks are already in rxUnackWin)
+		c.ackPayload[c.window] = 0x0
+		if c.rx.window() == c.window {
+			c.window++
+		} else {
+			c.window = c.rx.window() + 1
+		}
+	}
+
 	// switch diff := c.rx.block() - c.block; {
 	// case diff == 1:
 	// 	// Next block as expected; increment window and block
@@ -768,24 +881,25 @@ func (c *conn) ackData() stateType {
 	// 	return nil
 	// }
 	//
-	// if n < int(c.blksize) {
-	// 	// Reveived last DATA, we're done
-	// 	c.done = true
-	// }
-	//
-	// if c.window < c.windowsize && n >= int(c.blksize) {
-	// 	// We haven't reached the window
-	// 	return c.read
-	// }
-	//
-	// // Reached the windowsize or final data, send ACK and reset window
-	// c.log.trace("window %d, windowsize: %d, offset: %d, blksize: %d", c.window, c.windowsize, c.rx.offset, c.blksize)
-	// c.window = 0
-	// c.log.trace("Window %d reached, sending ACK for %d\n", c.windowsize, c.block)
-	// if err := c.sendAck(c.block); err != nil {
-	// 	c.err = wrapError(err, "sending DATA ACK")
-	// 	return nil
-	// }
+
+	// Last block
+	if n < int(c.blksize) {
+		// Reveived last DATA, we're done
+		c.done = true
+	}
+
+	// We haven't reached the window
+	if c.window < c.windowsize && n >= int(c.blksize) {
+		return c.read
+	}
+
+	// Reached the windowsize or final data, send ACK and reset window
+	c.window = 0
+	c.log.trace("Window %d reached, sending ACK for %d\n", c.windowsize, c.block)
+	if err := c.sendAck(); err != nil {
+		c.err = wrapError(err, "sending DATA ACK")
+		return nil
+	}
 
 	return c.read
 }
@@ -920,8 +1034,8 @@ func (c *conn) sendError(code ErrorCode, msg string) {
 func (c *conn) sendAck() error {
 	c.tx.writeAck(c.ackPayload)
 
-	// TODO: print the not rxed blocks
-	c.log.trace("Sending ACK for %d to %s\n", c.block, c.remoteAddr)
+	c.log.trace("Sending ACK %08b to %s\n", c.ackPayload, c.remoteAddr)
+	// TODO: reset bitmask to all 1s
 	return wrapError(c.writeToNet(false), "sending ACK")
 }
 
@@ -956,6 +1070,7 @@ func (c *conn) getUnackBlocks(ack_p []byte) []uint16 {
 
 				c.txBuf.PushQueue(index)
 				if idx := slices.IndexFunc(c.unackWin, func(d dataBlock) bool { return d.block == tx_data.block }); idx < 0 {
+					// Not already in unackWin
 					c.unackWin = append(c.unackWin, tx_data)
 				}
 
@@ -967,8 +1082,9 @@ func (c *conn) getUnackBlocks(ack_p []byte) []uint16 {
 					tx_data := c.txWin[index]
 
 					// Remove from unackWin
-					idx := slices.IndexFunc(c.unackWin, func(d dataBlock) bool { return d.block == tx_data.block })
-					c.unackWin = append(c.unackWin[:idx], c.unackWin[idx+1:]...)
+					c.unackWin = slices.DeleteFunc(c.unackWin, func(d dataBlock) bool {
+						return d.block == tx_data.block
+					})
 				}
 			}
 		}
@@ -1091,6 +1207,7 @@ func (c *conn) remoteError() error {
 
 // readFromNet reads from netConn into buffer.
 func (c *conn) readFromNet() (net.Addr, error) {
+	// TODO: handle timeout update during reception of data blocks (server side)
 	if c.reqChan != nil {
 		// Setup timer
 		if c.timer == nil {
@@ -1183,8 +1300,8 @@ func (c *conn) writeToNet(fragment bool) error {
 	return err
 }
 
-// ringBuffer embeds a bytes.Buffer, adding the ability to unread data
-// up to the number of slots.
+// ringBuffer embeds a bytes.Buffer, adding the ability to store blocks in
+// a queue.
 type ringBuffer struct {
 	bytes.Buffer
 	lastSlot bool
@@ -1204,15 +1321,14 @@ func newRingBuffer(slots int, size int) *ringBuffer {
 	}
 }
 
-// Len returns bytes.Buffer.Len() + any buffer space between current and head
-// add unack blocks counter and update every ack received
+// Len returns bytes.Buffer.Len() + any buffer space in the queue
 func (r *ringBuffer) Len() int {
-	buflen := len(r.queue) * r.size
-	return r.Buffer.Len() + buflen
+	queuelen := len(r.queue) * r.size
+	return r.Buffer.Len() + queuelen
 }
 
-// Read reads data from byte.Buffer if current and head are equal.
-// If current is behind head, data will be read from buf.
+// Read reads data from byte.Buffer if queue empty
+// If queue not empty, data will be read from buf.
 func (r *ringBuffer) Read(p []byte, window int) (int, error) {
 	offset := window * r.size
 
@@ -1251,10 +1367,12 @@ func (r *ringBuffer) Read(p []byte, window int) (int, error) {
 	return n, err
 }
 
+// Append elementto queue
 func (r *ringBuffer) PushQueue(slot int) {
 	r.queue = append(r.queue, slot)
 }
 
+// Remove first element of the queue
 func (r *ringBuffer) PopQueue() {
 	if len(r.queue) > 0 {
 		r.queue = r.queue[1:]
