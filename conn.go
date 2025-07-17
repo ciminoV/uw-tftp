@@ -158,19 +158,16 @@ type conn struct {
 	optionsParsed bool   // Whether TFTP options have been parsed yet
 	window        uint8  // Packets sent since last ACK
 	block         uint16 // Current block #
-	// unackBlock    uint16            // Last block # received and not yet acked
-	// unackWin      map[uint16][]byte // Window of blocks not yet acked (#block > current block #)
-	// catchup     bool   // Ignore incoming blocks from a window we reset
-	p           []byte // bytes to be read/written from/to file (depending on send/receive)
-	n           int    // byte count read/written
-	tries       int    // retry counter
-	triesAck    int    // retry ack counter
-	ackTimeout  bool
-	unackBlocks int
-	err         error // error has occurreds
-	closing     bool  // connection is closing
-	done        bool  // the transfer is complete (or error occurred)
-	duplicate   bool
+	p             []byte // bytes to be read/written from/to file (depending on send/receive)
+	n             int    // byte count read/written
+	tries         int    // retry counter
+	triesAck      int    // retry ack counter
+	ackTimeout    bool
+	unackBlocks   int
+	err           error // error has occurreds
+	closing       bool  // connection is closing
+	done          bool  // the transfer is complete (or error occurred)
+	duplicate     bool
 
 	// Buffers
 
@@ -183,7 +180,7 @@ type conn struct {
 	ackPayload []byte
 
 	rxWin      []dataBlock
-	rxUnackWin []uint16
+	rxUnackWin map[uint8]uint16
 	rxFirstw   uint8
 
 	txTime    time.Time
@@ -391,14 +388,20 @@ func (c *conn) writeSetup() stateType {
 		c.writer = netascii.NewWriter(c.writer)
 	}
 
-	// Init sender windows
+	// Init sender window
 	c.txWin = make([]dataBlock, c.windowsize)
-	c.unackWin = make([]dataBlock, c.windowsize)
 
-	// Init ack bitmask
-	// TODO: set to 1s by default
+	// Init unACKed blocks window for sender and receiver
+	c.unackWin = make([]dataBlock, c.windowsize)
+	c.rxUnackWin = make(map[uint8]uint16)
+
+	// Init ACK bitmask string
+	// (1 : lost block - 0 : received block)
 	bitlen := (1 + (c.windowsize-1)/8) * 8 // add padding
 	c.ackPayload = make([]byte, bitlen)
+	for i := range c.ackPayload {
+		c.ackPayload[i] = 0x1
+	}
 
 	// Client setup is done, ready to send data
 	if c.isClient {
@@ -410,6 +413,7 @@ func (c *conn) writeSetup() stateType {
 		return c.write
 	}
 
+	// TODO: handle RRQ case
 	// Send OACK
 	return c.sendOACK(ackOpts)
 }
@@ -585,13 +589,11 @@ func (c *conn) readSetup() stateType {
 		c.rx.buf = make([]byte, needed)
 	}
 
-	// c.unackWin = make(map[uint16][]byte, c.windowsize)
-
-	// If there we're not options negotiated, send ACK
-	// Client never sends OACK
-	if len(ackOpts) == 0 || c.isClient {
-		c.log.trace("Sending ACK to %s\n", c.remoteAddr)
-		// TODO: write ack
+	// If there are not options negotiated, send empty OACK
+	// Client initiating with RRQ responds with ACK to an OACK
+	if c.isClient {
+		// TODO: handle RRQ case
+		// c.log.trace("Sending ACK to %s\n", c.remoteAddr)
 		// c.tx.writeAck(c.block)
 	} else {
 		c.log.trace("Sending OACK to %s\n", c.remoteAddr)
@@ -607,8 +609,6 @@ func (c *conn) readSetup() stateType {
 	if c.isClient {
 		return nil
 	}
-
-	// c.unackBlock = ^uint16(0)
 
 	return c.read
 }
@@ -658,21 +658,35 @@ func (c *conn) readData() stateType {
 		if c.block == 0 {
 			// Retransmit an OACK
 			c.log.trace("Resending %s", c.tx)
+
 			c.tx = oack
+
 			c.writeToNet(c.fragmentRequest())
 		} else {
-			// TODO: only if duplicate == true
-			// check up to which block lost and update ack before sending
-			// if dupl == true && w != c.windowsize
-			// for from last window of packet to windowsize
-			// check if block number not already in lost buff
-			// if duplicate == false then unackwin already contains 1s for subsequent blocks
+			// If received duplicate blocks and lost subsequent blocks of
+			// the window: don't flag as lost already received blocks
+			if c.duplicate && c.window < c.windowsize {
+				for i := c.window; i < c.windowsize; i++ {
+					if _, ok := c.rxUnackWin[i]; !ok {
+						c.ackPayload[i] = 0
+					}
+				}
+
+				c.duplicate = false
+			}
 			c.log.trace("Resending ACK %08b\n", c.ackPayload)
 			if err := c.sendAck(); err != nil {
 				c.log.debug("resending ACK %v", err)
 			}
 			c.window = 0
 			c.tries += c.triesAck
+
+			// Example
+			// windowsize = 3
+			// Received block 1 (window = 0), lost block 2 and received block 3 (window = 2)
+			// Received duplicate block 1 (window = 0) and rxUnackWin = ["1" : 2]
+			// Timeout (lost both block 2 and 3)
+			// Send ackPayload = [010]
 		}
 
 		return c.readData
@@ -704,11 +718,6 @@ func (c *conn) readData() stateType {
 
 // ackData handles block sequence, windowing, and acknowledgements
 func (c *conn) ackData() stateType {
-	// TODO: ack blocks
-	// if c.rx.block < curr_block duplicate or unack check if lost block
-	// in order blocks write to rxBuf
-	// always reset c.window
-	// the RTT is the time between instant in which sendAck e last ack sent: use this as timeout after sending ack
 	var n int
 	var err error
 
@@ -745,10 +754,11 @@ func (c *conn) ackData() stateType {
 			}
 		} else {
 			// Missed blocks in the current window
-			// Add the block numbers to unack window in increasing order
+			// Add the block numbers to rxUnackWin window in increasing order
+			// If some block was already in rxUnackWin updates the key
 			n_unack := c.rx.block() - c.block - 1
 			for i := n_unack; i > 0; i-- {
-				c.rxUnackWin = append(c.rxUnackWin, c.rx.block()-i)
+				c.rxUnackWin[c.rx.window()-uint8(i)] = c.rx.block() - i
 			}
 
 			c.window = c.rx.window() + 1
@@ -759,10 +769,19 @@ func (c *conn) ackData() stateType {
 		c.block = c.rx.block()
 
 	} else {
-		// If present in rxUnackWin is a previously lost block
-		// add to rxWin (in order) and remove from rxUnackWin
-		// otherwise it is a duplicate
-		if ok := slices.Contains(c.rxUnackWin, c.rx.block()); ok {
+		// Check if received block was lost in previous transmissions
+		// otherwise is a duplicate
+		var is_unacked bool
+		var key_unacked uint8
+		for k, v := range c.rxUnackWin {
+			// If received block in rxUnackWin
+			if v == c.rx.block() {
+				is_unacked = true
+				key_unacked = k
+			}
+		}
+
+		if is_unacked {
 			idx := slices.IndexFunc(c.rxWin, func(d dataBlock) bool {
 				return d.block > c.rx.block()
 			})
@@ -770,19 +789,63 @@ func (c *conn) ackData() stateType {
 			c.rxWin = append(c.rxWin[:idx+1], c.rxWin[idx:]...)
 			c.rxWin[idx] = dataBlock{c.rx.block(), c.rx.data()}
 
-			c.rxUnackWin = slices.DeleteFunc(c.rxUnackWin, func(b uint16) bool {
-				return b == c.rx.block()
-			})
+			delete(c.rxUnackWin, key_unacked)
 
-			// If rxUnackWin is empty there are not out of order packets
+			// If rxUnackWin is empty there are no out of order packets
 			// write the whole rxWin to rxBuf
-			// otherwise write only in order chuncks
-			// TODO:
-			if len(c.rxUnackWin) > 0 {
+			// otherwise write only in order blocks
+			if len(c.rxUnackWin) == 0 {
+				for _, v := range c.rxWin {
+					n, err = c.rxBuf.Write(v.payload)
+					if err != nil {
+						c.err = wrapError(err, "writing to rxBuf after read")
+						return nil
+					}
+				}
+
+				// Clear rxWin
+				c.rxWin = nil
 			} else {
-				//while (lost_buff[0].block_number > unord_buff[0].block_number):
-				// write rxWin[0] to rxBuf
-				// and remove from rxWin
+				// Shift rxUnackWin greater than key_unacked
+				temp_map := make(map[uint8]uint16)
+				for k, v := range c.rxUnackWin {
+					if k > key_unacked {
+						temp_map[k-1] = v
+					} else {
+						temp_map[k] = v
+					}
+				}
+				c.rxUnackWin = temp_map
+
+				for c.rxUnackWin[0] > c.rxWin[0].block {
+					idx := slices.IndexFunc(c.rxWin, func(d dataBlock) bool {
+						return d.block > c.rxUnackWin[0]
+					})
+
+					for i := 0; i < idx; i++ {
+						n, err = c.rxBuf.Write(c.rxWin[i].payload)
+						if err != nil {
+							c.err = wrapError(err, "writing to rxBuf after read")
+							return nil
+						}
+					}
+
+					c.rxWin = c.rxWin[idx:]
+				}
+
+				// Example:
+				// rxWin = [ 2 3 4 5 9 ]
+				// rxUnackWin = [ (0,1) (1,6) (2,7) (3,8) ]
+				// 1 > 2 : false
+				// rx.block() = 1
+				// rx.window() = 0
+				// rxWin = [ 1 2 3 4 5 9 ]
+				// rxUnackWin = [ (0,6) (1,7) (2,8) ]
+				// 6 > 1 : true
+				//			idx = 5
+				//			rxBuf.Write(rxWin[0:4].payload)
+				//			rxWin = [ 9 ]
+				// 6 > 9 : false
 			}
 
 		} else {
@@ -798,89 +861,6 @@ func (c *conn) ackData() stateType {
 			c.window = c.rx.window() + 1
 		}
 	}
-
-	// switch diff := c.rx.block() - c.block; {
-	// case diff == 1:
-	// 	// Next block as expected; increment window and block
-	// 	c.log.trace("ackData diff: %d, current block: %d, rx block %d", diff, c.block, c.rx.block())
-	// 	c.block++
-	// 	c.window++
-	// 	c.triesAck = 0
-	// 	c.unackBlock = c.block + c.windowsize
-	//
-	// 	// Unacked block received in order
-	// 	if _, ok := c.unackWin[c.block]; ok {
-	// 		delete(c.unackWin, c.block)
-	// 	}
-	// case diff <= c.windowsize:
-	// 	// We missed blocks
-	// 	c.log.trace("ackData diff: %d, current block: %d, rx block %d", diff, c.block, c.rx.block())
-	//
-	// 	if data, ok := c.unackWin[c.block+1]; ok {
-	// 		c.log.debug("Block %d found in unacked window.", c.block+1)
-	//
-	// 		_, err := c.rxBuf.Write(data)
-	// 		if err != nil {
-	// 			c.err = wrapError(err, "writing to rxBuf after read")
-	// 			return nil
-	// 		}
-	//
-	// 		c.block++
-	// 		c.window++
-	// 		c.triesAck = 0
-	// 		delete(c.unackWin, c.block)
-	//
-	// 		// We missed other blocks
-	// 		if diff-1 > 1 {
-	// 			return c.ackData
-	// 		}
-	//
-	// 		// Increase to last received block
-	// 		c.block++
-	// 		c.window++
-	// 		break
-	// 	} else {
-	// 		c.log.debug("Block %d not found in extra buffer.", c.block+1)
-	// 		if _, ok := c.unackWin[c.rx.block()]; !ok {
-	// 			c.log.debug("Saving %d in extra buffer.", c.rx.block())
-	// 			c.unackWin[c.rx.block()] = c.rx.data()
-	// 		}
-	// 	}
-	//
-	// 	// Ignore, we need to catchup with server
-	// 	if c.unackBlock < c.rx.block() {
-	// 		c.unackBlock = c.rx.block()
-	// 		return c.read
-	// 	}
-	//
-	// 	// ACK previous block, reset window, and return sequence error
-	// 	c.log.debug("Missing blocks between %d and %d. Resetting to block %d", c.block, c.rx.block(), c.block)
-	//
-	// 	if c.triesAck >= c.retransmit {
-	// 		c.log.debug("Max retries exceeded")
-	// 		c.sendError(ErrCodeNotDefined, "max retries reached")
-	// 		c.err = wrapError(ErrMaxRetries, "reading data")
-	// 		return nil
-	// 	}
-	// 	if err := c.sendAck(c.block); err != nil {
-	// 		c.err = wrapError(err, "sending missed block(s) ACK")
-	// 		return nil
-	// 	}
-	//
-	// 	c.triesAck++
-	// 	c.window = 0
-	// 	c.unackBlock = c.rx.block()
-	//
-	// 	return c.read
-	// }
-	//
-	// // Add data to buffer
-	// n, err := c.rxBuf.Write(c.rx.data())
-	// if err != nil {
-	// 	c.err = wrapError(err, "writing to rxBuf after read")
-	// 	return nil
-	// }
-	//
 
 	// Last block
 	if n < int(c.blksize) {
@@ -900,6 +880,10 @@ func (c *conn) ackData() stateType {
 		c.err = wrapError(err, "sending DATA ACK")
 		return nil
 	}
+
+	// TODO:
+	// reset timeout
+	// the RTT is the time between instant in which sendAck e last ack sent: use this as timeout after sending ack
 
 	return c.read
 }
@@ -1035,7 +1019,12 @@ func (c *conn) sendAck() error {
 	c.tx.writeAck(c.ackPayload)
 
 	c.log.trace("Sending ACK %08b to %s\n", c.ackPayload, c.remoteAddr)
-	// TODO: reset bitmask to all 1s
+
+	// Reset ACK bitmask
+	for i := range c.ackPayload {
+		c.ackPayload[i] = 0x1
+	}
+
 	return wrapError(c.writeToNet(false), "sending ACK")
 }
 
