@@ -522,9 +522,6 @@ func (c *conn) writeData() stateType {
 		return nil
 	}
 
-	// Update transmission time
-	c.txTime = time.Now()
-
 	// Increment the window
 	c.window++
 
@@ -541,6 +538,10 @@ func (c *conn) writeData() stateType {
 
 	// Reset window
 	c.window = 0
+
+	// Store tx time to compute RTT on reception of OACK
+	// (after the whole window is transmitted)
+	c.txTime = time.Now()
 
 	return c.getAck
 }
@@ -605,6 +606,8 @@ func (c *conn) readSetup() stateType {
 		c.err = wrapError(err, "writing request to network")
 		return nil
 	}
+
+	c.txTime = time.Now()
 
 	if c.isClient {
 		return nil
@@ -692,6 +695,20 @@ func (c *conn) readData() stateType {
 		return c.readData
 	}
 
+	// Received a block of new window
+	// Save index of the block in the window and time
+	// For subsequent blocks of the window compute the expected time before the next one
+	if c.window == 0 {
+		c.timeout = time.Now().Sub(c.txTime)
+		c.rxFirstw = c.rx.window()
+		c.rxTime = time.Now()
+	} else {
+		diff_window := c.rx.window() - c.rxFirstw
+		rx_duration := (time.Now().Sub(c.rxTime)) / time.Duration(diff_window)
+
+		c.rxTimeout = rx_duration*(time.Duration(c.windowsize)-time.Duration(c.rx.block())-1) + c.guardTime
+	}
+
 	// validate datagram
 	if err := c.rx.validate(); err != nil {
 		c.err = wrapError(err, "validating read data")
@@ -721,19 +738,6 @@ func (c *conn) ackData() stateType {
 	var n int
 	var err error
 
-	// Received a block of new window
-	// Save index of the block in the window and time
-	// For subsequent blocks of the window compute the expected time before the next one
-	if c.window == 0 {
-		c.rxFirstw = c.rx.window()
-		c.rxTime = time.Now()
-	} else {
-		diff_window := c.rx.window() - c.rxFirstw
-		rx_duration := (time.Now().Sub(c.rxTime)) / time.Duration(diff_window)
-
-		c.rxTimeout = rx_duration*(time.Duration(c.windowsize)-time.Duration(c.rx.block())-1) + c.guardTime
-	}
-
 	// New block received
 	// otherwise unacked block or duplicate
 	if c.rx.block() > c.block {
@@ -743,7 +747,7 @@ func (c *conn) ackData() stateType {
 			c.ackPayload[c.window] = 0x0
 			c.window++
 
-			if len(c.unackWin) > 0 {
+			if len(c.rxUnackWin) > 0 {
 				c.rxWin = append(c.rxWin, dataBlock{c.rx.block(), c.rx.data()})
 			} else {
 				n, err = c.rxBuf.Write(c.rx.data())
@@ -881,9 +885,7 @@ func (c *conn) ackData() stateType {
 		return nil
 	}
 
-	// TODO:
-	// reset timeout
-	// the RTT is the time between instant in which sendAck e last ack sent: use this as timeout after sending ack
+	c.txTime = time.Now()
 
 	return c.read
 }
@@ -1153,6 +1155,10 @@ func (c *conn) getAck() stateType {
 		c.log.trace("Received duplicate OACK. Resending last window.\n")
 		return c.writeData
 	case opCodeACK:
+		// Set timeout to RTT
+		c.timeout = time.Now().Sub(c.txTime)
+
+		// Read ACK payload
 		ack_payload := c.rx.ack()
 
 		if c.windowLost(ack_payload) {
@@ -1196,13 +1202,21 @@ func (c *conn) remoteError() error {
 
 // readFromNet reads from netConn into buffer.
 func (c *conn) readFromNet() (net.Addr, error) {
-	// TODO: handle timeout update during reception of data blocks (server side)
+	timeout := c.timeout
+
+	// If the server is reading from net and is waiting for next blocks
+	// in the window, use rxTimeout as timeout
+	// (expected time for next block arrival)
+	if !c.isClient && c.window > 0 {
+		timeout = c.rxTimeout
+	}
+
 	if c.reqChan != nil {
 		// Setup timer
 		if c.timer == nil {
-			c.timer = time.NewTimer(c.timeout)
+			c.timer = time.NewTimer(timeout)
 		} else {
-			c.timer.Reset(c.timeout)
+			c.timer.Reset(timeout)
 		}
 
 		// Single port mode
@@ -1221,13 +1235,13 @@ func (c *conn) readFromNet() (net.Addr, error) {
 
 	if c.tcpConn == nil {
 		// Read from the UDP server socket
-		if err = c.netConn.SetReadDeadline(time.Now().Add(c.timeout)); err != nil {
+		if err = c.netConn.SetReadDeadline(time.Now().Add(timeout)); err != nil {
 			return nil, wrapError(err, "setting network read deadline")
 		}
 		n, addr, err = c.netConn.ReadFrom(c.rx.buf)
 	} else {
 		// Read from the TCP external socket
-		if err = c.tcpConn.SetReadDeadline(time.Now().Add(c.timeout)); err != nil {
+		if err = c.tcpConn.SetReadDeadline(time.Now().Add(timeout)); err != nil {
 			return nil, wrapError(err, "setting network read deadline")
 		}
 		n, err = c.tcpConn.Read(c.rx.buf)
