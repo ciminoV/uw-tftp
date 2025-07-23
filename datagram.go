@@ -116,7 +116,7 @@ func (d datagram) String() string {
 	case opCodeRRQ, opCodeWRQ:
 		return fmt.Sprintf("%s[Filename: %q; Options: %s]", o, d.filename(), d.options())
 	case opCodeDATA:
-		return fmt.Sprintf("%s[Block: %d; Data Length: %d]", o, d.block(), len(d.data()))
+		return fmt.Sprintf("%s[Window: %d; Block: %d; Length: %d]", o, d.window(), d.block(), len(d.data()))
 	case opCodeOACK:
 		return fmt.Sprintf("%s[Options: %s]", o, d.options())
 	case opCodeACK:
