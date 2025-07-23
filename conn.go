@@ -1240,18 +1240,22 @@ func (c *conn) getAck() stateType {
 	switch op := c.rx.opcode(); op {
 	case opCodeOACK:
 		c.log.trace("Received duplicate OACK. Resending last window.\n")
+		c.ackTimeout = true
+		c.adone = false
 		return c.writeData
 	case opCodeACK:
-		// Set timeout to RTT
+		// Set timeout equals to RTT + guardTime
 		c.timeout = time.Duration(time.Since(c.txTime).Seconds()) + c.guardTime
 
-		// Read ACK payload
+		// Parse ACK bitstring
 		ack_payload := c.rx.ack()
-
 		if c.windowLost(ack_payload) {
+			// All TX DATA packets were lost, retransmit last window
+			// (as duplicate ACK case).
 			c.ackTimeout = true
+			c.adone = false
 
-			c.log.trace("Duplicate ACK. Resending last window.")
+			c.log.trace("Received ACK, but no block was received. Resending last window.")
 		} else {
 			lost_blocks := c.getUnackBlocks(ack_payload)
 
