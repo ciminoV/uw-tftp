@@ -7,7 +7,7 @@ package tftp // import "pack.ag/tftp"
 import (
 	"bytes"
 	"errors"
-	"fmt"
+	//	"fmt"
 	"io"
 	"math/rand/v2"
 	"net"
@@ -788,6 +788,7 @@ func (c *conn) ackData() stateType {
 	rx_window := c.rx.window()
 	rx_block := c.rx.block()
 	rx_data := c.rx.data()
+	c.log.trace("rx data [%s]", rx_data)
 
 	// New block received
 	// otherwise unacked block or duplicate
@@ -799,10 +800,12 @@ func (c *conn) ackData() stateType {
 			c.window++
 
 			if len(c.rxUnackWin) > 0 {
+				c.log.trace("new out of order payload [%s]", rx_data)
 				c.rxWin = append(c.rxWin, dataBlock{rx_window, rx_block, rx_data})
 
 				n = len(rx_data)
 			} else {
+				c.log.trace("new in order payload [%s]", rx_data)
 				n, err = c.rxBuf.Write(rx_data)
 				if err != nil {
 					c.err = wrapError(err, "writing to rxBuf after read")
@@ -847,29 +850,26 @@ func (c *conn) ackData() stateType {
 
 			c.log.trace("idx_ruw: %d", idx_ruw)
 			c.log.trace("idx_rw: %d", idx_rw)
-
 			c.log.trace("rxUnackWin: %d", c.rxUnackWin)
-			temp := ""
 			for i := range c.rxWin {
-				temp = temp + fmt.Sprintf("(%d, %d)", c.rxWin[i].window, c.rxWin[i].block)
+				c.log.trace("rxWin[%d] %d %d %s", i, c.rxWin[i].window, c.rxWin[i].block, c.rxWin[i].payload)
 			}
-			c.log.trace("rxWin %s", temp)
 
 			c.rxWin = insertAt(c.rxWin, idx_rw, dataBlock{rx_window, rx_block, rx_data})
 			c.rxUnackWin = removeAt(c.rxUnackWin, idx_ruw)
 
 			c.log.trace("rxUnackWin: %d", c.rxUnackWin)
-			temp = ""
 			for i := range c.rxWin {
-				temp = temp + fmt.Sprintf("(%d, %d)", c.rxWin[i].window, c.rxWin[i].block)
+				c.log.trace("rxWin[%d] %d %d %s", i, c.rxWin[i].window, c.rxWin[i].block, c.rxWin[i].payload)
 			}
-			c.log.trace("rxWin %s", temp)
 
 			// If rxUnackWin is empty there are no out of order packets
 			// write the whole rxWin to rxBuf.
 			// Otherwise write only in order blocks.
 			if len(c.rxUnackWin) == 0 {
 				for _, v := range c.rxWin {
+					c.log.trace("len==0 payload %s", v.payload)
+
 					n, err = c.rxBuf.Write(v.payload)
 					if err != nil {
 						c.err = wrapError(err, "writing to rxBuf after read")
@@ -881,17 +881,17 @@ func (c *conn) ackData() stateType {
 				c.rxWin = nil
 			} else {
 				for true {
-					// TODO: merge if and indexfunc
 					if c.rxUnackWin[0].block > c.rxWin[0].block {
 						idx := slices.IndexFunc(c.rxWin, func(d dataBlock) bool {
 							return d.block > c.rxUnackWin[0].block
 						})
+
 						c.log.trace("unackwin %d", c.rxUnackWin[0].block)
 						c.log.trace("rxwin %d", c.rxWin[0].block)
-						c.log.trace("idx %d", idx)
+						c.log.trace("for idx %d", idx)
 
-						// TODO: fix when idx == 0
 						for i := 0; i < idx; i++ {
+							c.log.trace("len!=0 payload %s", c.rxWin[i].payload)
 							n, err = c.rxBuf.Write(c.rxWin[i].payload)
 							if err != nil {
 								c.err = wrapError(err, "writing to rxBuf after read")
@@ -925,11 +925,12 @@ func (c *conn) ackData() stateType {
 	}
 
 	c.log.trace("rxUnackWin: %d", c.rxUnackWin)
-	temp := ""
+	// temp := ""
 	for i := range c.rxWin {
-		temp = temp + fmt.Sprintf("(%d, %d)", c.rxWin[i].window, c.rxWin[i].block)
+		// temp = temp + fmt.Sprintf("(%d, %d)", c.rxWin[i].window, c.rxWin[i].block)
+		c.log.trace("rxWin[%d] %s", i, c.rxWin[i])
 	}
-	c.log.trace("rxWin %s", temp)
+	// c.log.trace("rxWin %s", temp)
 
 	c.ackPayload[rx_window] = 0x0
 
@@ -1154,9 +1155,8 @@ func (c *conn) getUnackBlocks(ack_p []byte) []uint16 {
 				if len(c.unackWin) > 0 {
 					// Remove from unackWin
 					if idx := slices.IndexFunc(c.unackWin, func(d dataBlock) bool { return d.block == tx_data.block }); idx >= 0 {
+						c.txBuf.RemoveSlotFromWindow(idx)
 						c.unackWin = removeAt(c.unackWin, idx)
-
-						c.txBuf.RemoveSlotFromWindow(int(tx_data.window))
 					}
 				}
 			}
