@@ -181,8 +181,8 @@ type conn struct {
 	txBuf *windowBuffer // buffers outgoing data, retaining windowsize * blksize
 	rxBuf bytes.Buffer  // buffer incoming data
 
-	txWin    []dataBlock // Block numbers of last transmitted window
-	unackWin []dataBlock // Block numbers of lost packets
+	txWin    []uint16 // Block numbers of last transmitted window
+	unackWin []uint16 // Block numbers of lost packets
 
 	rxWin      []dataBlock // Out of order received DATA packets
 	rxUnackWin []dataBlock // DATA packets not received (lost)
@@ -399,7 +399,7 @@ func (c *conn) writeSetup() stateType {
 	}
 
 	// Init transmitted blocks window
-	c.txWin = make([]dataBlock, c.windowsize)
+	c.txWin = make([]uint16, c.windowsize)
 
 	// Client setup is done, ready to send data
 	if c.isClient {
@@ -478,7 +478,7 @@ func (c *conn) writeData() stateType {
 
 	// ACK not received or duplicate ACK, retransmit last window
 	if c.ackTimeout {
-		block := c.txWin[c.window].block
+		block := c.txWin[c.window]
 
 		// Read bytes from last window
 		n, err = c.txBuf.ReadFromWindow(c.buf, int(c.window))
@@ -496,7 +496,7 @@ func (c *conn) writeData() stateType {
 		// received ACK packet, transmit new window.
 		// First retransmit lost blocks (unackBlocks > 0) and then new ones.
 		if c.unackBlocks > 0 {
-			unack_block := c.unackWin[c.window].block
+			unack_block := c.unackWin[c.window]
 
 			// Read bytes from last window
 			n, err = c.txBuf.ReadFromWindow(c.buf, int(c.window))
@@ -509,7 +509,7 @@ func (c *conn) writeData() stateType {
 			c.tx.writeData(c.window, unack_block, c.buf[:n])
 
 			// Update txWin
-			c.txWin[c.window] = dataBlock{c.window, unack_block, nil}
+			c.txWin[c.window] = unack_block
 
 			// Decrement unacked blocks counter
 			c.unackBlocks--
@@ -530,7 +530,7 @@ func (c *conn) writeData() stateType {
 			c.tx.writeData(c.window, c.block, c.buf[:n])
 
 			// Update txWin
-			c.txWin[c.window] = dataBlock{c.window, c.block, nil}
+			c.txWin[c.window] = c.block
 
 			c.log.trace("Sending window %d with block number %d and %d bytes to %s\n", c.window, c.block, n, c.remoteAddr)
 		}
@@ -1100,18 +1100,18 @@ func (c *conn) getUnackBlocks(ack_p []byte) []uint16 {
 			if (ack_p[i] & (1 << (7 - j))) != 0 {
 
 				// Not already in unackWin, add it and update txBuf window.
-				if idx := slices.IndexFunc(c.unackWin, func(d dataBlock) bool { return d.block == tx_data.block }); idx < 0 {
+				if idx := slices.IndexFunc(c.unackWin, func(d uint16) bool { return d == tx_data }); idx < 0 {
 					c.unackWin = append(c.unackWin, tx_data)
 
-					c.txBuf.AddSlotToWindow(int(tx_data.window))
+					c.txBuf.AddSlotToWindow(index)
 				}
 
-				blocks = append(blocks, tx_data.block)
+				blocks = append(blocks, tx_data)
 			} else {
 				// Current bit equals to 0.
 				// If current block was lost in previous transmissions,
 				// remove it from txBuf window and unackWin.
-				if idx := slices.IndexFunc(c.unackWin, func(d dataBlock) bool { return d.block == tx_data.block }); idx >= 0 {
+				if idx := slices.IndexFunc(c.unackWin, func(d uint16) bool { return d == tx_data }); idx >= 0 {
 					// Update txBuf window
 					c.txBuf.RemoveSlotFromWindow(idx)
 
@@ -1249,11 +1249,12 @@ func (c *conn) readFromNet() (net.Addr, error) {
 		timeout = c.rxTimeout
 	}
 
-	// TODO: remove, used only for testing --------------------------------------
+	// TODO: remove, used only for testing with localhost --------------------
 	if c.isClient {
 		timeout += 10 * time.Second
 	}
-	// TODO: remove, used only for testing --------------------------------------
+	c.log.trace("timeout %d", timeout)
+	// TODO: remove, used only for testing with localhost --------------------
 
 	// Server single port mode
 	if c.reqChan != nil {
@@ -1469,8 +1470,8 @@ func errorDefer(fn func() error, log *logger, msg string) {
 }
 
 // removeAt removes an element of slice s at position index.
-func removeAt(s []dataBlock, index int) []dataBlock {
-	ret := make([]dataBlock, 0, len(s)-1)
+func removeAt[T dataBlock | uint16](s []T, index int) []T {
+	ret := make([]T, 0, len(s)-1)
 	ret = append(ret, s[:index]...)
 	return append(ret, s[index+1:]...)
 }
