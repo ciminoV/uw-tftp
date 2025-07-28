@@ -121,7 +121,7 @@ func newConnFromHost(udpNet string, host string, port int, tcpConn *net.TCPConn)
 		return c, nil
 	}
 
-	return newConn(udpNet, addr, tcpConn, toMulti)
+	return newConn(udpNet, addr, tcpConn)
 }
 
 // dataBlock mimics the structure of a DATA packet (without the opcode).
