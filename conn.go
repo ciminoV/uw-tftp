@@ -1243,19 +1243,11 @@ func (c *conn) remoteError() error {
 // readFromNet reads from netConn into buffer.
 func (c *conn) readFromNet() (net.Addr, error) {
 	timeout := c.timeout
-	c.log.trace("timeout %d", timeout)
 
 	// Expected time before next DATA packet of the window (server side).
 	if !c.isClient && c.rxTimeout > 0 {
 		timeout = c.rxTimeout
 	}
-
-	// TODO: remove, used only for testing with localhost --------------------
-	if c.isClient {
-		timeout += 10 * time.Second
-	}
-	c.log.trace("timeout %d", timeout)
-	// TODO: remove, used only for testing with localhost --------------------
 
 	// Server single port mode
 	if c.reqChan != nil {
