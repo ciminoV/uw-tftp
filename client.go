@@ -45,7 +45,7 @@ func NewClient(opts ...ClientOpt) (*Client, error) {
 		port:              -1,
 		opts:              options,
 		retransmit:        defaultRetransmit,
-		timeoutMultiplier: defaultTimeOutMultiplier,
+		timeoutMultiplier: defaultTimeoutMultiplier,
 	}
 
 	// Apply option functions to client
@@ -81,9 +81,9 @@ func (c *Client) Get(url string) (*Response, error) {
 	// Create connection
 	var conn *conn
 	if c.tcpAddrStr == "" {
-		conn, err = newConnFromHost(c.net, u.host, c.port, nil, c.timeoutMultiplier)
+		conn, err = newConnFromHost(c.net, u.host, c.port, nil)
 	} else {
-		conn, err = newConnFromHost(c.net, u.host, c.port, c.tcpConn, c.timeoutMultiplier)
+		conn, err = newConnFromHost(c.net, u.host, c.port, c.tcpConn)
 	}
 	if err != nil {
 		return nil, err
@@ -91,6 +91,8 @@ func (c *Client) Get(url string) (*Response, error) {
 
 	// Set retransmit
 	conn.retransmit = c.retransmit
+
+	conn.timeoutMultiplier = c.timeoutMultiplier
 
 	// Initiate the request
 	if err := conn.sendReadRequest(u.file, c.opts); err != nil {
@@ -112,9 +114,9 @@ func (c *Client) Put(url string, r io.Reader, size int64) (err error) {
 	// Create connection
 	var conn *conn
 	if c.tcpAddrStr != "" {
-		conn, err = newConnFromHost(c.net, u.host, c.port, c.tcpConn, c.timeoutMultiplier)
+		conn, err = newConnFromHost(c.net, u.host, c.port, c.tcpConn)
 	} else {
-		conn, err = newConnFromHost(c.net, u.host, c.port, nil, c.timeoutMultiplier)
+		conn, err = newConnFromHost(c.net, u.host, c.port, nil)
 	}
 	if err != nil {
 		return err
@@ -128,6 +130,8 @@ func (c *Client) Put(url string, r io.Reader, size int64) (err error) {
 
 	// Set retransmit
 	conn.retransmit = c.retransmit
+
+	conn.timeoutMultiplier = c.timeoutMultiplier
 
 	// Check if tsize is enabled
 	if _, ok := c.opts[optTransferSize]; ok {
@@ -344,12 +348,16 @@ func ClientTcpForward(tcpAddr string) ClientOpt {
 	}
 }
 
-func ClientTimeoutMultiplier(m int) ClientOpt {
+// ClientTimeoutMultiplier configures the multiplier of the timeout.
+// Valid range is 1 to 255.
+//
+// Default: 1.
+func ClientTimeoutMultiplier(multiplier int) ClientOpt {
 	return func(c *Client) error {
-		if m < 0 {
+		if multiplier < 0 {
 			return ErrInvalidTimeOutMultiplier
 		}
-		c.timeoutMultiplier = m
+		c.timeoutMultiplier = multiplier
 		return nil
 	}
 }
