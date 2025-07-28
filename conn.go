@@ -26,7 +26,7 @@ const (
 	defaultPktsize           = defaultHdrsize + defaultBlksize
 	defaultWindowsize        = 1
 	defaultRetransmit        = 10
-	defaultTimeOutMultiplier = 1
+	defaultTimeoutMultiplier = 1
 )
 
 // All connections will use these options unless overridden.
@@ -40,7 +40,7 @@ var defaultOptions = map[string]string{
 // udpNet is one of "udp", "udp4", or "udp6"
 // addr is the address of the target server
 // tcpConn is the TCP socket of an external application, if specified
-func newConn(udpNet string, addr *net.UDPAddr, tcpConn *net.TCPConn, toMulti int) (*conn, error) {
+func newConn(udpNet string, addr *net.UDPAddr, tcpConn *net.TCPConn) (*conn, error) {
 	// Start listening, an empty UDPAddr will cause the system to assign a port
 	netConn, err := net.ListenUDP(udpNet, &net.UDPAddr{})
 	if err != nil {
@@ -57,14 +57,14 @@ func newConn(udpNet string, addr *net.UDPAddr, tcpConn *net.TCPConn, toMulti int
 		retransmit:        defaultRetransmit,
 		mode:              defaultMode,
 		tcpConn:           tcpConn,
-		timeoutMultiplier: toMulti,
+		timeoutMultiplier: defaultTimeoutMultiplier,
 	}
 	c.rx.buf = make([]byte, defaultPktsize)
 
 	return c, nil
 }
 
-func newSinglePortConn(addr *net.UDPAddr, netConn *net.UDPConn, tcpConn *net.TCPConn, reqChan chan []byte, toMulti int) *conn {
+func newSinglePortConn(addr *net.UDPAddr, netConn *net.UDPConn, tcpConn *net.TCPConn, reqChan chan []byte) *conn {
 	return &conn{
 		log:               newLogger(addr.String()),
 		remoteAddr:        addr,
@@ -77,14 +77,14 @@ func newSinglePortConn(addr *net.UDPAddr, netConn *net.UDPConn, tcpConn *net.TCP
 		reqChan:           reqChan,
 		netConn:           netConn,
 		tcpConn:           tcpConn,
-		timeoutMultiplier: toMulti,
+		timeoutMultiplier: defaultTimeoutMultiplier,
 	}
 }
 
 // newConnFromHost wraps newConn and looks up the target's address from a string
 //
 // This function is used by Client
-func newConnFromHost(udpNet string, host string, port int, tcpConn *net.TCPConn, toMulti int) (*conn, error) {
+func newConnFromHost(udpNet string, host string, port int, tcpConn *net.TCPConn) (*conn, error) {
 	// Resolve server
 	addr, err := net.ResolveUDPAddr(udpNet, host)
 	if err != nil {
@@ -108,7 +108,7 @@ func newConnFromHost(udpNet string, host string, port int, tcpConn *net.TCPConn,
 			retransmit:        defaultRetransmit,
 			mode:              defaultMode,
 			tcpConn:           tcpConn,
-			timeoutMultiplier: toMulti,
+			timeoutMultiplier: defaultTimeoutMultiplier,
 		}
 		c.rx.buf = make([]byte, defaultPktsize)
 

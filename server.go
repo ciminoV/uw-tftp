@@ -58,7 +58,7 @@ func NewServer(addr string, opts ...ServerOpt) (*Server, error) {
 		dispatchChan:      make(chan *request, 64),
 		reqDoneChan:       make(chan string, 64),
 		close:             make(chan struct{}),
-		timeoutMultiplier: defaultTimeOutMultiplier,
+		timeoutMultiplier: defaultTimeoutMultiplier,
 	}
 
 	for _, opt := range opts {
@@ -334,16 +334,16 @@ func (s *Server) newConn(req *request, reqChan chan []byte) (*conn, func() error
 
 	if s.singlePort {
 		if s.tcpAddrStr != "" {
-			c = newSinglePortConn(req.addr, s.conn, s.tcpConn, reqChan, s.timeoutMultiplier)
+			c = newSinglePortConn(req.addr, s.conn, s.tcpConn, reqChan)
 		} else {
-			c = newSinglePortConn(req.addr, s.conn, nil, reqChan, s.timeoutMultiplier)
+			c = newSinglePortConn(req.addr, s.conn, nil, reqChan)
 		}
 	} else {
 		// Use empty mode until request has been parsed.
 		if s.tcpAddrStr != "" {
-			c, err = newConn(s.net, req.addr, s.tcpConn, s.timeoutMultiplier)
+			c, err = newConn(s.net, req.addr, s.tcpConn)
 		} else {
-			c, err = newConn(s.net, req.addr, nil, s.timeoutMultiplier)
+			c, err = newConn(s.net, req.addr, nil)
 		}
 		if err != nil {
 			s.log.err("Received error opening connection for new request: %v", err)
@@ -354,6 +354,8 @@ func (s *Server) newConn(req *request, reqChan chan []byte) (*conn, func() error
 	c.rx = dg
 	// Set retransmit
 	c.retransmit = s.retransmit
+
+	c.timeoutMultiplier = s.timeoutMultiplier
 
 	closer := func() error {
 		err := c.Close()
@@ -420,12 +422,16 @@ func ServerTcpForward(tcpAddr string) ServerOpt {
 	}
 }
 
-func ServerTimeoutMultiplier(m int) ServerOpt {
+// ServerTimeoutMultiplier configures the multiplier of the timeout.
+// Valid range is 1 to 255.
+//
+// Default: 1.
+func ServerTimeoutMultiplier(multiplier int) ServerOpt {
 	return func(s *Server) error {
-		if m < 0 {
+		if multiplier < 0 {
 			return ErrInvalidTimeOutMultiplier
 		}
-		s.timeoutMultiplier = m
+		s.timeoutMultiplier = multiplier
 		return nil
 	}
 }
