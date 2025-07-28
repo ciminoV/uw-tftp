@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 )
 
 const maxFilenameLen = 45
@@ -24,6 +25,7 @@ type Client struct {
 
 	retransmit        int // Per-packet retransmission limit
 	timeoutMultiplier int // Multiplier for the timeout entry
+	guardTime         int // Extra waiting time added to timeout
 
 	tcpAddrStr string       // TCP address string
 	tcpConn    *net.TCPConn // TCP connection socket
@@ -46,6 +48,7 @@ func NewClient(opts ...ClientOpt) (*Client, error) {
 		opts:              options,
 		retransmit:        defaultRetransmit,
 		timeoutMultiplier: defaultTimeoutMultiplier,
+		guardTime:         0,
 	}
 
 	// Apply option functions to client
@@ -94,6 +97,8 @@ func (c *Client) Get(url string) (*Response, error) {
 
 	conn.timeoutMultiplier = c.timeoutMultiplier
 
+	conn.guardTime = time.Duration(c.guardTime) * time.Second
+
 	// Initiate the request
 	if err := conn.sendReadRequest(u.file, c.opts); err != nil {
 		return nil, err
@@ -130,6 +135,8 @@ func (c *Client) Put(url string, r io.Reader, size int64) (err error) {
 
 	// Set retransmit
 	conn.retransmit = c.retransmit
+
+	conn.guardTime = time.Duration(c.guardTime) * time.Second
 
 	conn.timeoutMultiplier = c.timeoutMultiplier
 
@@ -358,6 +365,20 @@ func ClientTimeoutMultiplier(multiplier int) ClientOpt {
 			return ErrInvalidTimeOutMultiplier
 		}
 		c.timeoutMultiplier = multiplier
+		return nil
+	}
+}
+
+// ClientGuardTime configures the additional waiting time before
+// resending unacknowledged datagram.
+//
+// Default: 0.
+func ClientGuardTime(guardTime int) ClientOpt {
+	return func(c *Client) error {
+		if guardTime < 0 {
+			return ErrInvalidGuardTime
+		}
+		c.guardTime = guardTime
 		return nil
 	}
 }

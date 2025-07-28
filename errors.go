@@ -43,6 +43,8 @@ var (
 	ErrMaxRetries = errors.New("max retries reached")
 	// ErrInvalidTimeOutMultiplier indicates the number to multiply the timeout by
 	ErrInvalidTimeOutMultiplier = errors.New("invalid timeout multiplier: cannot be negative")
+	// ErrInvalidGuardTime indicates the additional waiting time
+	ErrInvalidGuardTime = errors.New("invalid guard time: cannot be negative")
 )
 
 type errUnexpectedDatagram struct {

@@ -33,6 +33,7 @@ type Server struct {
 
 	retransmit        int // Per-packet retransmission limit
 	timeoutMultiplier int // Multiplier for the timeout entry
+	guardTime         int // Extra waiting time added to timeout
 
 	rh ReadHandler
 	wh WriteHandler
@@ -59,6 +60,7 @@ func NewServer(addr string, opts ...ServerOpt) (*Server, error) {
 		reqDoneChan:       make(chan string, 64),
 		close:             make(chan struct{}),
 		timeoutMultiplier: defaultTimeoutMultiplier,
+		guardTime:         0,
 	}
 
 	for _, opt := range opts {
@@ -154,7 +156,6 @@ func (s *Server) Serve(conn *net.UDPConn) error {
 				s.tcpConn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
 				n, err = s.tcpConn.Read(buf[offset:])
 
-				// Only needed for debug purposes
 				tcpAddr := s.tcpConn.RemoteAddr().(*net.TCPAddr)
 				addr = &net.UDPAddr{
 					IP:   tcpAddr.IP,
@@ -352,10 +353,12 @@ func (s *Server) newConn(req *request, reqChan chan []byte) (*conn, func() error
 	}
 
 	c.rx = dg
-	// Set retransmit
-	c.retransmit = s.retransmit
+
+	c.guardTime = time.Duration(s.guardTime) * time.Second
 
 	c.timeoutMultiplier = s.timeoutMultiplier
+
+	c.retransmit = s.retransmit
 
 	closer := func() error {
 		err := c.Close()
@@ -432,6 +435,20 @@ func ServerTimeoutMultiplier(multiplier int) ServerOpt {
 			return ErrInvalidTimeOutMultiplier
 		}
 		s.timeoutMultiplier = multiplier
+		return nil
+	}
+}
+
+// ServerGuardTime configures the additional waiting time before
+// resending unacknowledged datagram.
+//
+// Default: 0.
+func ServerGuardTime(guardTime int) ServerOpt {
+	return func(s *Server) error {
+		if guardTime < 0 {
+			return ErrInvalidGuardTime
+		}
+		s.guardTime = guardTime
 		return nil
 	}
 }

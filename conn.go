@@ -22,6 +22,7 @@ const (
 	defaultUDPNet            = "udp"
 	defaultTCPNet            = "tcp"
 	defaultTimeout           = time.Second * 60
+	defaultGuardTime         = time.Second * 5
 	defaultBlksize           = 55
 	defaultHdrsize           = sizeofHdr
 	defaultPktsize           = defaultHdrsize + defaultBlksize
@@ -113,6 +114,7 @@ func newConnFromHost(udpNet string, host string, port int, tcpConn *net.TCPConn)
 			mode:              defaultMode,
 			tcpConn:           tcpConn,
 			timeoutMultiplier: defaultTimeoutMultiplier,
+			guardTime:         defaultGuardTime,
 		}
 		c.rx.buf = make([]byte, defaultPktsize)
 
@@ -1098,7 +1100,7 @@ func (c *conn) getUnackBlocks(ack_p []byte) []uint16 {
 			if (ack_p[i] & (1 << (7 - j))) != 0 {
 
 				// Not already in unackWin, add it and update txBuf window.
-				if idx := slices.IndexFunc(c.unackWin, func(d uint16) bool { return d == tx_data }); idx < 0 {
+				if idx := slices.IndexFunc(c.unackWin, func(b uint16) bool { return b == tx_data }); idx < 0 {
 					c.unackWin = append(c.unackWin, tx_data)
 
 					c.txBuf.AddSlotToWindow(index)
@@ -1109,7 +1111,7 @@ func (c *conn) getUnackBlocks(ack_p []byte) []uint16 {
 				// Current bit equals to 0.
 				// If current block was lost in previous transmissions,
 				// remove it from txBuf window and unackWin.
-				if idx := slices.IndexFunc(c.unackWin, func(d uint16) bool { return d == tx_data }); idx >= 0 {
+				if idx := slices.IndexFunc(c.unackWin, func(b uint16) bool { return b == tx_data }); idx >= 0 {
 					// Update txBuf window
 					c.txBuf.RemoveSlotFromWindow(idx)
 
@@ -1241,6 +1243,7 @@ func (c *conn) remoteError() error {
 // readFromNet reads from netConn into buffer.
 func (c *conn) readFromNet() (net.Addr, error) {
 	timeout := c.timeout
+	c.log.trace("timeout %d", timeout)
 
 	// Expected time before next DATA packet of the window (server side).
 	if !c.isClient && c.rxTimeout > 0 {

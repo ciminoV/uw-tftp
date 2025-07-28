@@ -17,6 +17,7 @@ func main() {
 	opts := []tftp.ServerOpt{
 		// tftp.ServerRetransmit(5),
 		// tftp.ServerTimeoutMultiplier(2),
+		tftp.ServerGuardTime(5),
 		tftp.ServerSinglePort(true),
 	}
 
