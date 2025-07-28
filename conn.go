@@ -115,7 +115,7 @@ func newConnFromHost(udpNet string, host string, port int, tcpConn *net.TCPConn)
 		return c, nil
 	}
 
-	return newConn(udpNet, addr, tcpConn, toMulti)
+	return newConn(udpNet, addr, tcpConn)
 }
 
 // conn handles TFTP read and write requests
