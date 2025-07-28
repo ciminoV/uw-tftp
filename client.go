@@ -99,6 +99,13 @@ func (c *Client) Get(url string) (*Response, error) {
 
 	conn.guardTime = time.Duration(c.guardTime)
 
+	if c.opts[optTimeout] != "" {
+		timeout, err := strconv.ParseFloat(c.opts[optTimeout], 64)
+		if err == nil {
+			conn.timeout = time.Duration(c.timeoutMultiplier)*time.Duration(timeout)*time.Second + c.guardTime
+		}
+	}
+
 	// Initiate the request
 	if err := conn.sendReadRequest(u.file, c.opts); err != nil {
 		return nil, err
@@ -139,6 +146,13 @@ func (c *Client) Put(url string, r io.Reader, size int64) (err error) {
 	conn.guardTime = time.Duration(c.guardTime)
 
 	conn.timeoutMultiplier = c.timeoutMultiplier
+
+	if c.opts[optTimeout] != "" {
+		timeout, err := strconv.ParseFloat(c.opts[optTimeout], 64)
+		if err == nil {
+			conn.timeout = time.Duration(c.timeoutMultiplier)*time.Duration(timeout)*time.Second + c.guardTime
+		}
+	}
 
 	// Check if tsize is enabled
 	if _, ok := c.opts[optTransferSize]; ok {
