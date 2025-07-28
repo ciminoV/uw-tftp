@@ -23,9 +23,9 @@ type Client struct {
 	port int
 	opts map[string]string // Map of TFTP options
 
-	retransmit        int // Per-packet retransmission limit
-	timeoutMultiplier int // Multiplier for the timeout entry
-	guardTime         int // Extra waiting time added to timeout
+	retransmit        int           // Per-packet retransmission limit
+	timeoutMultiplier int           // Multiplier for the timeout entry
+	guardTime         time.Duration // Extra waiting time added to timeout
 
 	tcpAddrStr string       // TCP address string
 	tcpConn    *net.TCPConn // TCP connection socket
@@ -97,7 +97,7 @@ func (c *Client) Get(url string) (*Response, error) {
 
 	conn.timeoutMultiplier = c.timeoutMultiplier
 
-	conn.guardTime = time.Duration(c.guardTime) * time.Second
+	conn.guardTime = time.Duration(c.guardTime)
 
 	// Initiate the request
 	if err := conn.sendReadRequest(u.file, c.opts); err != nil {
@@ -136,7 +136,7 @@ func (c *Client) Put(url string, r io.Reader, size int64) (err error) {
 	// Set retransmit
 	conn.retransmit = c.retransmit
 
-	conn.guardTime = time.Duration(c.guardTime) * time.Second
+	conn.guardTime = time.Duration(c.guardTime)
 
 	conn.timeoutMultiplier = c.timeoutMultiplier
 
@@ -378,7 +378,7 @@ func ClientGuardTime(guardTime int) ClientOpt {
 		if guardTime < 0 {
 			return ErrInvalidGuardTime
 		}
-		c.guardTime = guardTime
+		c.guardTime = time.Duration(guardTime) * time.Second
 		return nil
 	}
 }

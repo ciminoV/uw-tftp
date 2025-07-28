@@ -186,7 +186,7 @@ type conn struct {
 
 	rxWin      []dataBlock // Out of order received DATA packets
 	rxUnackWin []dataBlock // DATA packets not received (lost)
-	rxFirstw   uint8       // Window number of first received block in the current window
+	rxWindow   uint8       // Window number of first received block in the current window
 
 	ackPayload []byte // Payload of ACK packets (1 = lost block; 0 = received block)
 
@@ -293,7 +293,7 @@ func (c *conn) receiveResponse() stateType {
 
 	if c.isSender {
 		// Set timeout equals to RTT + guardTime
-		c.timeout = time.Duration(time.Since(c.txTime).Seconds()) + c.guardTime
+		c.timeout = time.Since(c.txTime) + c.guardTime
 
 		return c.handleWRQResponse
 	}
@@ -724,22 +724,17 @@ func (c *conn) readData() stateType {
 	// Save window index of the block and reception time, and update
 	// the timeout with the RTT + guardTime.
 	if c.window == 0 {
-		c.timeout = time.Duration(time.Since(c.txTime).Seconds()) + c.guardTime
-
-		c.rxFirstw = c.rx.window()
-
-		c.rxTime = time.Now()
+		c.timeout = time.Since(c.txTime) + c.guardTime
 	} else {
 		// For successive blocks of the window compute the expected time before the next one.
-		diff_window := float64(c.rx.window() - c.rxFirstw)
-		rx_duration := time.Since(c.rxTime).Seconds() / diff_window
+		rx_duration := time.Since(c.rxTime) / time.Duration(c.rx.window()-c.rxWindow)
 
-		// Number of lost blocks between last and current received block
-		lost := float64(c.windowsize - uint8(c.rx.block()) - 1)
-
-		// Expected time before next packet: rx duration * (no. of lost blocks)
-		c.rxTimeout = time.Duration(rx_duration*lost*float64(time.Second)) + c.guardTime
+		// Expected time before next packet.
+		c.rxTimeout = time.Duration(rx_duration) + c.guardTime
 	}
+
+	c.rxWindow = c.rx.window()
+	c.rxTime = time.Now()
 
 	// validate datagram
 	if err := c.rx.validate(); err != nil {
@@ -999,7 +994,10 @@ func (c *conn) parseOptions() (options, error) {
 			if err != nil {
 				return nil, &errParsingOption{option: opt, value: val}
 			}
-			c.timeout = time.Duration(c.timeoutMultiplier) * time.Second * time.Duration(seconds)
+			// If we are sender, timeout already computed
+			if !c.isSender {
+				c.timeout = time.Duration(c.timeoutMultiplier) * time.Second * time.Duration(seconds)
+			}
 			ackOpts[opt] = val
 		case optTransferSize:
 			tsize, err := strconv.ParseInt(val, 10, 64)
@@ -1199,7 +1197,7 @@ func (c *conn) getAck() stateType {
 		return c.writeData
 	case opCodeACK:
 		// Set timeout equals to RTT + guardTime
-		c.timeout = time.Duration(time.Since(c.txTime).Seconds()) + c.guardTime
+		c.timeout = time.Since(c.txTime) + c.guardTime
 
 		// Parse ACK bitstring
 		ack_payload := c.rx.ack()
@@ -1245,7 +1243,7 @@ func (c *conn) readFromNet() (net.Addr, error) {
 	timeout := c.timeout
 
 	// Expected time before next DATA packet of the window (server side).
-	if !c.isClient && c.rxTimeout > 0 {
+	if !c.isClient && c.rxTimeout > 0 && c.window > 0 {
 		timeout = c.rxTimeout
 	}
 

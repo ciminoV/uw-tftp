@@ -31,9 +31,9 @@ type Server struct {
 	dispatchChan chan *request
 	reqDoneChan  chan string
 
-	retransmit        int // Per-packet retransmission limit
-	timeoutMultiplier int // Multiplier for the timeout entry
-	guardTime         int // Extra waiting time added to timeout
+	retransmit        int           // Per-packet retransmission limit
+	timeoutMultiplier int           // Multiplier for the timeout entry
+	guardTime         time.Duration // Extra waiting time added to timeout
 
 	rh ReadHandler
 	wh WriteHandler
@@ -354,7 +354,7 @@ func (s *Server) newConn(req *request, reqChan chan []byte) (*conn, func() error
 
 	c.rx = dg
 
-	c.guardTime = time.Duration(s.guardTime) * time.Second
+	c.guardTime = time.Duration(s.guardTime)
 
 	c.timeoutMultiplier = s.timeoutMultiplier
 
@@ -443,12 +443,12 @@ func ServerTimeoutMultiplier(multiplier int) ServerOpt {
 // resending unacknowledged datagram.
 //
 // Default: 0.
-func ServerGuardTime(guardTime int) ServerOpt {
+func ServerGuardTime(guardTime float64) ServerOpt {
 	return func(s *Server) error {
 		if guardTime < 0 {
 			return ErrInvalidGuardTime
 		}
-		s.guardTime = guardTime
+		s.guardTime = time.Duration(guardTime) * time.Second
 		return nil
 	}
 }
