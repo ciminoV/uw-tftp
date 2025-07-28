@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 )
 
 const maxFilenameLen = 45
@@ -94,6 +95,13 @@ func (c *Client) Get(url string) (*Response, error) {
 
 	conn.timeoutMultiplier = c.timeoutMultiplier
 
+	if c.opts[optTimeout] != "" {
+		timeout, err := strconv.ParseFloat(c.opts[optTimeout], 64)
+		if err == nil {
+			conn.timeout = time.Duration(c.timeoutMultiplier) * time.Duration(timeout) * time.Second
+		}
+	}
+
 	// Initiate the request
 	if err := conn.sendReadRequest(u.file, c.opts); err != nil {
 		return nil, err
@@ -132,6 +140,13 @@ func (c *Client) Put(url string, r io.Reader, size int64) (err error) {
 	conn.retransmit = c.retransmit
 
 	conn.timeoutMultiplier = c.timeoutMultiplier
+
+	if c.opts[optTimeout] != "" {
+		timeout, err := strconv.ParseFloat(c.opts[optTimeout], 64)
+		if err == nil {
+			conn.timeout = time.Duration(c.timeoutMultiplier) * time.Duration(timeout) * time.Second
+		}
+	}
 
 	// Check if tsize is enabled
 	if _, ok := c.opts[optTransferSize]; ok {
