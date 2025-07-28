@@ -14,7 +14,7 @@ func main() {
 
 	// Configuring with a slice of options
 	opts := []tftp.ClientOpt{
-		tftp.ClientBlocksize(56),  // default 60
+		tftp.ClientBlocksize(55),  // default 60
 		tftp.ClientWindowsize(13), // default 1
 		tftp.ClientTimeout(45),    // default 60
 		// tftp.ClientMode("NA"),     // default Octet
