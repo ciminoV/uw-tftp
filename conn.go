@@ -720,17 +720,18 @@ func (c *conn) readData() stateType {
 		return c.readData
 	}
 
-	// Received first block of a window (may not be in order).
-	// Save window index of the block and reception time, and update
-	// the timeout with the RTT + guardTime.
 	if c.window == 0 {
+		// Received first block of a window (may not be in order).
 		c.timeout = time.Since(c.txTime) + c.guardTime
 	} else {
-		// For successive blocks of the window compute the expected time before the next one.
+		// Estimate of DATA packets rx duration
 		rx_duration := time.Since(c.rxTime) / time.Duration(c.rx.window()-c.rxWindow)
 
-		// Expected time before next packet.
-		c.rxTimeout = time.Duration(rx_duration) + c.guardTime
+		// DATA packets left in the window
+		window_left := c.windowsize - c.rx.window() - 1
+
+		// Expected time before end of the window.
+		c.rxTimeout = rx_duration*time.Duration(window_left) + c.guardTime
 	}
 
 	c.rxWindow = c.rx.window()
@@ -917,8 +918,6 @@ func (c *conn) ackData() stateType {
 
 	c.window = 0
 
-	c.txTime = time.Now()
-
 	return c.read
 }
 
@@ -1061,6 +1060,9 @@ func (c *conn) sendAck() error {
 	for i := range c.ackPayload {
 		c.ackPayload[i] = 0x1
 	}
+
+	c.txTime = time.Now()
+	c.rxTimeout = 0
 
 	return wrapError(c.writeToNet(false), "sending ACK")
 }
@@ -1243,7 +1245,7 @@ func (c *conn) readFromNet() (net.Addr, error) {
 	timeout := c.timeout
 
 	// Expected time before next DATA packet of the window (server side).
-	if !c.isClient && c.rxTimeout > 0 && c.window > 0 {
+	if !c.isClient && c.rxTimeout > 0 {
 		timeout = c.rxTimeout
 	}
 
