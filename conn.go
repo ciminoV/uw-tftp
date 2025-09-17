@@ -158,6 +158,7 @@ type conn struct {
 	err           error             // error has occurreds
 	closing       bool              // connection is closing
 	done          bool              // the transfer is complete (or error occurred)
+	duplicate     bool              // received duplicate block(s)
 
 	// Buffers
 	buf   []byte       // incoming data from, sized to blksize + headers
@@ -608,8 +609,12 @@ func (c *conn) readData() stateType {
 func (c *conn) ackData() stateType {
 	if c.rx.block() <= c.block {
 		c.log.debug("Blocks %d already received.", c.rx.block())
+		c.window++
+		c.duplicate = true
 		return c.read
 	}
+
+	c.duplicate = false
 
 	switch diff := c.rx.block() - c.block; {
 	case diff == 1:
@@ -968,7 +973,9 @@ func (c *conn) readFromNet() (net.Addr, error) {
 		if c.timer == nil {
 			c.timer = time.NewTimer(c.timeout)
 		} else {
-			c.timer.Reset(c.timeout)
+			if !c.duplicate {
+				c.timer.Reset(c.timeout)
+			}
 		}
 
 		// Single port mode
